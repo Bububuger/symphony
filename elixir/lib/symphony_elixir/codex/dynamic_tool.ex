@@ -26,11 +26,38 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   }
 
+  @sync_workpad_tool "sync_workpad"
+  @sync_workpad_description "Create or update a workpad comment on a Linear issue. Reads the body from a local file to keep the conversation context small."
+  @sync_workpad_create "mutation($issueId: String!, $body: String!) { commentCreate(input: { issueId: $issueId, body: $body }) { success comment { id url } } }"
+  @sync_workpad_update "mutation($id: String!, $body: String!) { commentUpdate(id: $id, input: { body: $body }) { success comment { id url } } }"
+  @sync_workpad_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["issue_id", "file_path"],
+    "properties" => %{
+      "issue_id" => %{
+        "type" => "string",
+        "description" => "Linear issue identifier (e.g. \"ENG-123\") or internal UUID."
+      },
+      "file_path" => %{
+        "type" => "string",
+        "description" => "Path to a local markdown file whose contents become the comment body."
+      },
+      "comment_id" => %{
+        "type" => "string",
+        "description" => "Existing comment ID to update. Omit to create a new comment."
+      }
+    }
+  }
+
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
     case tool do
       @linear_graphql_tool ->
         execute_linear_graphql(arguments, opts)
+
+      @sync_workpad_tool ->
+        execute_sync_workpad(arguments, opts)
 
       other ->
         failure_response(%{
@@ -49,6 +76,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "name" => @linear_graphql_tool,
         "description" => @linear_graphql_description,
         "inputSchema" => @linear_graphql_input_schema
+      },
+      %{
+        "name" => @sync_workpad_tool,
+        "description" => @sync_workpad_description,
+        "inputSchema" => @sync_workpad_input_schema
       }
     ]
   end
@@ -62,6 +94,50 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     else
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp execute_sync_workpad(args, opts) do
+    with {:ok, issue_id, file_path, comment_id} <- normalize_sync_workpad_args(args),
+         {:ok, body} <- read_workpad_file(file_path) do
+      {query, variables} =
+        if comment_id,
+          do: {@sync_workpad_update, %{"id" => comment_id, "body" => body}},
+          else: {@sync_workpad_create, %{"issueId" => issue_id, "body" => body}}
+
+      execute_linear_graphql(%{"query" => query, "variables" => variables}, opts)
+    else
+      {:error, reason} -> failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp normalize_sync_workpad_args(%{} = args) do
+    issue_id = Map.get(args, "issue_id") || Map.get(args, :issue_id)
+    file_path = Map.get(args, "file_path") || Map.get(args, :file_path)
+    comment_id = Map.get(args, "comment_id") || Map.get(args, :comment_id)
+
+    cond do
+      not is_binary(issue_id) or issue_id == "" ->
+        {:error, {:sync_workpad, "`issue_id` is required"}}
+
+      not is_binary(file_path) or file_path == "" ->
+        {:error, {:sync_workpad, "`file_path` is required"}}
+
+      true ->
+        comment_id = if is_binary(comment_id) and comment_id != "", do: comment_id
+        {:ok, issue_id, file_path, comment_id}
+    end
+  end
+
+  defp normalize_sync_workpad_args(_args) do
+    {:error, {:sync_workpad, "`issue_id` and `file_path` are required"}}
+  end
+
+  defp read_workpad_file(path) do
+    case File.read(path) do
+      {:ok, ""} -> {:error, {:sync_workpad, "file is empty: `#{path}`"}}
+      {:ok, body} -> {:ok, body}
+      {:error, reason} -> {:error, {:sync_workpad, "cannot read `#{path}`: #{:file.format_error(reason)}"}}
     end
   end
 
@@ -146,6 +222,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp encode_payload(payload), do: inspect(payload)
+
+  defp tool_error_payload({:sync_workpad, message}) do
+    %{"error" => %{"message" => "sync_workpad: #{message}"}}
+  end
 
   defp tool_error_payload(:missing_query) do
     %{

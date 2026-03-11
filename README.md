@@ -22,7 +22,7 @@ The state machine lives in `WORKFLOW.md` — a markdown file with YAML frontmatt
 
 ## What's different from upstream
 
-- **Token-efficient Linear operations** — pre-built GraphQL patterns for all common operations (workpad sync, state transitions, PR attachment, issue creation) with minimal return fields, so agents never burn tokens on schema introspection
+- **Cheaper Linear calls** — agents no longer burn tokens on schema introspection before every GraphQL call, and workpad sync is a single dynamic tool instead of a hand-rolled mutation
 - **Correct sandbox** — the workflow is git + GitHub PR centric. Upstream's default sandbox blocks `.git/` writes, which silently breaks the entire flow. Fixed.
 - **Media uploads via Linear** — upstream references a GitHub media upload skill that doesn't ship. The workflow and Linear skill now use Linear's native `fileUpload` mutation for screenshots and recordings
 - **Setup skill** — auto-detects your repo, installs worker skills, creates Linear workflow states, and verifies everything before launch
