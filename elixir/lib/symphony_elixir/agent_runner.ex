@@ -3,7 +3,6 @@ defmodule SymphonyElixir.AgentRunner do
   Executes a single Linear issue in its workspace with the configured backend.
   """
 
-  import Bitwise, only: [<<<: 2]
   require Logger
   alias SymphonyElixir.{AgentBackend, Config, ErrorClassifier, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
