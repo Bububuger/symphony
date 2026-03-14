@@ -1265,6 +1265,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   test "application configures a rotating file logger handler" do
     assert {:ok, handler_config} = :logger.get_handler_config(:symphony_disk_log)
     assert handler_config.module == :logger_disk_log_h
+    assert {SymphonyElixir.JsonFormatter, %{}} = handler_config.formatter
 
     disk_config = handler_config.config
     assert disk_config.type == :wrap
