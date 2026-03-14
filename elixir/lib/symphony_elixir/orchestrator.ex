@@ -1548,16 +1548,16 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp trace_id_for_update(_existing, %{trace_id: trace_id}) when is_binary(trace_id),
-    do: trace_id
-
-  defp trace_id_for_update(existing, _update), do: existing
-
   defp turn_count_for_update(existing_count, _existing_session_id, _update)
        when is_integer(existing_count),
        do: existing_count
 
   defp turn_count_for_update(_existing_count, _existing_session_id, _update), do: 0
+
+  defp trace_id_for_update(_existing, %{trace_id: trace_id}) when is_binary(trace_id),
+    do: trace_id
+
+  defp trace_id_for_update(existing, _update), do: existing
 
   defp session_id_from_update(%{session_id: session_id}) when is_binary(session_id), do: session_id
 
