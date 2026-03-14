@@ -6,11 +6,17 @@ defmodule SymphonyElixir.AgentRunner do
   require Logger
   import Bitwise
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, ErrorClassifier, Linear.Issue, PromptBuilder, Tracker, Workspace}
+
+  defmodule RunError do
+    @moduledoc false
+    defexception [:message, :issue_id, :issue_identifier, :error_class, :reason]
+  end
 
   @empty_turn_threshold_ms 5_000
   @max_consecutive_empty_turns 3
   @empty_turn_backoff_base_ms 2_000
+  @type error_class :: ErrorClassifier.error_class()
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
@@ -24,18 +30,20 @@ defmodule SymphonyElixir.AgentRunner do
             :ok
           else
             {:error, reason} ->
-              Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
-              raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+              raise_run_error(issue, reason)
           end
         after
           Workspace.run_after_run_hook(workspace, issue)
         end
 
       {:error, reason} ->
-        Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
-        raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+        raise_run_error(issue, reason)
     end
   end
+
+  @doc false
+  @spec classify_error_for_test(term()) :: error_class()
+  def classify_error_for_test(reason), do: ErrorClassifier.classify(reason)
 
   defp codex_message_handler(recipient, issue) do
     fn message ->
@@ -85,7 +93,9 @@ defmodule SymphonyElixir.AgentRunner do
           next_consecutive_empty = if empty_turn?, do: consecutive_empty + 1, else: 0
 
           if next_consecutive_empty >= @max_consecutive_empty_turns do
-            Logger.warning("Empty turn circuit breaker: #{next_consecutive_empty} consecutive empty turns (<#{@empty_turn_threshold_ms}ms) for #{issue_context(refreshed_issue)}; returning control to orchestrator")
+            Logger.warning(
+              "Empty turn circuit breaker: #{next_consecutive_empty} consecutive empty turns (<#{@empty_turn_threshold_ms}ms) for #{issue_context(refreshed_issue)}; returning control to orchestrator"
+            )
 
             :ok
           else
@@ -171,6 +181,28 @@ defmodule SymphonyElixir.AgentRunner do
     |> String.trim()
     |> String.downcase()
   end
+
+  defp raise_run_error(issue, reason) do
+    context = issue_context(issue)
+    error_class = ErrorClassifier.classify(reason)
+
+    message = "Agent run failed for #{context} error_class=#{error_class}: #{inspect(reason)}"
+
+    Logger.error(message)
+
+    raise RunError,
+      message: message,
+      issue_id: issue_id(issue),
+      issue_identifier: issue_identifier(issue),
+      error_class: error_class,
+      reason: reason
+  end
+
+  defp issue_id(%Issue{id: issue_id}) when is_binary(issue_id), do: issue_id
+  defp issue_id(_issue), do: nil
+
+  defp issue_identifier(%Issue{identifier: identifier}) when is_binary(identifier), do: identifier
+  defp issue_identifier(_issue), do: nil
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
