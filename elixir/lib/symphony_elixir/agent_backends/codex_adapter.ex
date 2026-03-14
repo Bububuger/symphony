@@ -1,9 +1,8 @@
 defmodule SymphonyElixir.AgentBackends.CodexAdapter do
   @moduledoc false
 
-  @behaviour SymphonyElixir.AgentBackend
-
-  @impl true
+  @doc "Normalize a raw Codex JSON-RPC event into canonical form."
+  @spec normalize_event(map()) :: {:ok, map()} | :ignore | {:error, term()}
   def normalize_event(%{"method" => "thread/started"}) do
     {:ok, %{event: :session_started, message: nil, tool: nil, status: :ok}}
   end

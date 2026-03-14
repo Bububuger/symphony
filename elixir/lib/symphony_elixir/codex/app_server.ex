@@ -208,22 +208,6 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp resolve_command(opts) when is_list(opts) do
-    command = Keyword.get(opts, :command, Config.settings!().codex.command)
-
-    if is_binary(command) do
-      trimmed = String.trim(command)
-
-      if byte_size(trimmed) > 0 do
-        {:ok, command}
-      else
-        {:error, :invalid_command}
-      end
-    else
-      {:error, :invalid_command}
-    end
-  end
-
   defp port_metadata(port) when is_port(port) do
     case :erlang.port_info(port, :os_pid) do
       {:os_pid, os_pid} ->
