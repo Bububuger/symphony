@@ -3,7 +3,7 @@ defmodule SymphonyElixir.DynamicTools.MCPServer do
   Minimal stdio MCP server that exposes Symphony dynamic tools.
   """
 
-  alias SymphonyElixir.Codex.DynamicTool
+  alias SymphonyElixir.{Codex.DynamicTool, Workflow}
 
   @default_linear_endpoint "https://api.linear.app/graphql"
   @default_protocol_version "2024-11-05"
@@ -22,6 +22,7 @@ defmodule SymphonyElixir.DynamicTools.MCPServer do
   def run_cli(args \\ []) do
     case parse_cli_args(args) do
       {:ok, opts} ->
+        :ok = maybe_set_workflow_file_path()
         serve(opts)
 
       {:help, usage} ->
@@ -83,6 +84,52 @@ defmodule SymphonyElixir.DynamicTools.MCPServer do
 
   defp usage_message do
     "Usage: symphony dynamic-tools-mcp [--linear-api-key <token>] [--linear-endpoint <url>]"
+  end
+
+  defp maybe_set_workflow_file_path do
+    current_path = Workflow.workflow_file_path()
+
+    if File.regular?(current_path) do
+      :ok
+    else
+      fallback_path =
+        [
+          Path.expand("elixir/WORKFLOW.md", File.cwd!()),
+          script_workflow_path()
+        ]
+        |> Enum.find(&(&1 && File.regular?(&1)))
+
+      if is_binary(fallback_path) do
+        Workflow.set_workflow_file_path(fallback_path)
+      else
+        :ok
+      end
+    end
+  end
+
+  defp script_workflow_path do
+    case :escript.script_name() do
+      [] ->
+        nil
+
+      script_name when is_list(script_name) ->
+        script_name
+        |> List.to_string()
+        |> script_workflow_path_from_script_name()
+
+      script_name when is_binary(script_name) and script_name != "" ->
+        script_workflow_path_from_script_name(script_name)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp script_workflow_path_from_script_name(script_name) when is_binary(script_name) do
+    script_name
+    |> Path.dirname()
+    |> Path.join("../WORKFLOW.md")
+    |> Path.expand()
   end
 
   defp loop(state, input, output, read, write) do
