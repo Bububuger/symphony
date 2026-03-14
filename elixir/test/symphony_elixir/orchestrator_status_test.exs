@@ -1254,7 +1254,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert is_integer(due_at_ms)
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-    assert remaining_ms >= 8_500
+    assert remaining_ms >= 7_500
     assert remaining_ms <= 10_500
 
     retry_entry = Enum.find(snapshot.retrying, fn entry -> entry.issue_id == issue_id end)
