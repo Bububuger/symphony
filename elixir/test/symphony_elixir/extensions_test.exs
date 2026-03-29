@@ -75,6 +75,43 @@ defmodule SymphonyElixir.ExtensionsTest do
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
     end
+
+    def handle_call({:queue_intervention, issue_identifier, directive}, _from, state) do
+      item = %{
+        at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+        event: "intervention_queued",
+        message: "Directive queued for next turn",
+        directive: directive,
+        queued_count: 1
+      }
+
+      activity =
+        state
+        |> Keyword.get(:activity, %{})
+        |> Map.update(issue_identifier, [item], &(&1 ++ [item]))
+
+      payload = %{
+        issue_identifier: issue_identifier,
+        status: "queued",
+        directive: directive,
+        queued_count: 1
+      }
+
+      {:reply, {:ok, payload}, Keyword.put(state, :activity, activity)}
+    end
+
+    def handle_call({:issue_activity, issue_identifier, since}, _from, state) do
+      items = state |> Keyword.get(:activity, %{}) |> Map.get(issue_identifier, [])
+
+      items =
+        if is_binary(since) do
+          Enum.filter(items, fn item -> String.compare(Map.get(item, :at, ""), since) == :gt end)
+        else
+          items
+        end
+
+      {:reply, {:ok, items}, state}
+    end
   end
 
   setup do
@@ -567,24 +604,18 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    # GET /api/v1/issues/completed — stub returns empty list
+    # GET /api/v1/issues/completed — returns tracker-backed payload
     completed = json_response(get(build_conn(), "/api/v1/issues/completed"), 200)
     assert completed["items"] == []
     assert is_binary(completed["generated_at"])
 
-    # GET /api/v1/issues/:id/activity — stub returns empty activity
+    # GET /api/v1/issues/:id/activity — empty before any intervention is queued
     activity = json_response(get(build_conn(), "/api/v1/issues/MT-HTTP/activity"), 200)
     assert activity["issue_identifier"] == "MT-HTTP"
     assert activity["items"] == []
     assert activity["has_more"] == false
     assert is_nil(activity["since"])
     assert is_binary(activity["generated_at"])
-
-    # GET /api/v1/issues/:id/activity?since=<ts> — since is echoed back
-    since_activity =
-      json_response(get(build_conn(), "/api/v1/issues/MT-HTTP/activity?since=2024-01-01T00:00:00Z"), 200)
-
-    assert since_activity["since"] == "2024-01-01T00:00:00Z"
 
     # GET /api/v1/issues/:id/tokens — returns token data from snapshot
     tokens = json_response(get(build_conn(), "/api/v1/issues/MT-HTTP/tokens"), 200)
@@ -616,6 +647,21 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert intervene["issue_identifier"] == "MT-HTTP"
     assert intervene["status"] == "queued"
     assert intervene["directive"] == "please stop"
+    assert intervene["queued_count"] == 1
+
+    # GET /api/v1/issues/:id/activity — queued intervention is now visible
+    activity_after_intervene = json_response(get(build_conn(), "/api/v1/issues/MT-HTTP/activity"), 200)
+    assert length(activity_after_intervene["items"]) == 1
+    [queued_item] = activity_after_intervene["items"]
+    assert queued_item["event"] == "intervention_queued"
+    assert queued_item["directive"] == "please stop"
+
+    # GET /api/v1/issues/:id/activity?since=<ts> — since filters the existing item out
+    since_activity =
+      json_response(get(build_conn(), "/api/v1/issues/MT-HTTP/activity?since=#{queued_item["at"]}"), 200)
+
+    assert since_activity["since"] == queued_item["at"]
+    assert since_activity["items"] == []
 
     # POST /api/v1/issues/:id/intervene — missing directive returns 422
     assert json_response(post(build_conn(), "/api/v1/issues/MT-HTTP/intervene", %{}), 422) ==

@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, Tracker}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -151,6 +151,42 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
+  @spec completed_issues_payload() :: map()
+  def completed_issues_payload do
+    generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+    terminal_states = Config.settings!().tracker.terminal_states
+
+    items =
+      case Tracker.fetch_issues_by_states(terminal_states) do
+        {:ok, issues} when is_list(issues) -> Enum.map(issues, &completed_issue_payload/1)
+        _ -> []
+      end
+
+    %{items: items, generated_at: generated_at}
+  end
+
+  @spec issue_activity_payload(String.t(), GenServer.name(), String.t() | nil) ::
+          {:ok, map()} | {:error, :issue_not_found}
+  def issue_activity_payload(issue_identifier, orchestrator, since)
+      when is_binary(issue_identifier) do
+    generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+
+    case Orchestrator.issue_activity(orchestrator, issue_identifier, since) do
+      {:ok, items} ->
+        {:ok,
+         %{
+           issue_identifier: issue_identifier,
+           items: Enum.map(items, &activity_item_payload/1),
+           has_more: false,
+           since: since,
+           generated_at: generated_at
+         }}
+
+      {:error, :issue_not_found} ->
+        {:error, :issue_not_found}
+    end
+  end
+
   defp issue_payload_body(issue_identifier, running, retry) do
     %{
       issue_identifier: issue_identifier,
@@ -182,6 +218,26 @@ defmodule SymphonyElixirWeb.Presenter do
       output_tokens: Map.get(turn, :output_tokens) || Map.get(turn, "output_tokens"),
       total_tokens: Map.get(turn, :total_tokens) || Map.get(turn, "total_tokens"),
       recorded_at: iso8601(Map.get(turn, :recorded_at) || Map.get(turn, "recorded_at"))
+    }
+  end
+
+  defp completed_issue_payload(issue) do
+    %{
+      issue_id: Map.get(issue, :id),
+      issue_identifier: Map.get(issue, :identifier),
+      title: Map.get(issue, :title),
+      state: Map.get(issue, :state),
+      url: Map.get(issue, :url)
+    }
+  end
+
+  defp activity_item_payload(item) when is_map(item) do
+    %{
+      at: Map.get(item, :at) || Map.get(item, "at"),
+      event: Map.get(item, :event) || Map.get(item, "event"),
+      message: Map.get(item, :message) || Map.get(item, "message"),
+      directive: Map.get(item, :directive) || Map.get(item, "directive"),
+      queued_count: Map.get(item, :queued_count) || Map.get(item, "queued_count")
     }
   end
 

@@ -148,11 +148,15 @@ defmodule SymphonyElixir.AgentRunner do
          max_turns,
          consecutive_empty,
          total_empty,
-         context_monitor
+       context_monitor
        ) do
     turn_start_ms = System.monotonic_time(:millisecond)
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
-    prompt_suffix = context_prompt_suffix(context_monitor)
+    prompt_suffix =
+      opts
+      |> intervention_prompt_suffix(issue)
+      |> merge_prompt_suffix(context_prompt_suffix(context_monitor))
+
     Process.put(:agent_runner_latest_usage, nil)
 
     with {:ok, turn_session} <-
@@ -478,6 +482,46 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp context_prompt_suffix(_context_monitor), do: nil
+
+  defp intervention_prompt_suffix(opts, %Issue{id: issue_id}) when is_list(opts) and is_binary(issue_id) do
+    fetcher = Keyword.get(opts, :intervention_fetcher)
+
+    directives =
+      case fetcher do
+        fun when is_function(fun, 1) -> fun.(issue_id)
+        _ -> []
+      end
+
+    directives
+    |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+    |> Enum.map(&String.trim/1)
+    |> case do
+      [] ->
+        nil
+
+      items ->
+        rendered_items =
+          items
+          |> Enum.map_join("\n", fn directive -> "- " <> directive end)
+
+        """
+        Operator directives for this turn:
+
+        #{rendered_items}
+
+        Apply these directives during this turn unless they conflict with higher-priority system instructions.
+        """
+    end
+  end
+
+  defp intervention_prompt_suffix(_opts, _issue), do: nil
+
+  defp merge_prompt_suffix(nil, other), do: other
+  defp merge_prompt_suffix(other, nil), do: other
+
+  defp merge_prompt_suffix(left, right) when is_binary(left) and is_binary(right) do
+    String.trim(left) <> "\n\n" <> String.trim(right)
+  end
 
   defp maybe_track_latest_usage(message) when is_map(message) do
     case extract_token_usage(message) do

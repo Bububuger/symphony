@@ -6,6 +6,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   use Phoenix.Controller, formats: [:json]
 
   alias Plug.Conn
+  alias SymphonyElixir.{Orchestrator}
   alias SymphonyElixirWeb.{Endpoint, Presenter}
 
   @spec state(Conn.t(), map()) :: Conn.t()
@@ -44,15 +45,15 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
 
   @spec completed_issues(Conn.t(), map()) :: Conn.t()
   def completed_issues(conn, _params) do
-    generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-    json(conn, %{items: [], generated_at: generated_at})
+    json(conn, Presenter.completed_issues_payload())
   end
 
   @spec issue_activity(Conn.t(), map()) :: Conn.t()
   def issue_activity(conn, %{"id" => id} = params) do
-    since = Map.get(params, "since")
-    generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-    json(conn, %{issue_identifier: id, items: [], has_more: false, since: since, generated_at: generated_at})
+    case Presenter.issue_activity_payload(id, orchestrator(), Map.get(params, "since")) do
+      {:ok, payload} -> json(conn, payload)
+      {:error, :issue_not_found} -> error_response(conn, 404, "issue_not_found", "Issue not found")
+    end
   end
 
   @spec issue_tokens(Conn.t(), map()) :: Conn.t()
@@ -76,7 +77,14 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
 
       true ->
         directive = String.trim(raw)
-        conn |> put_status(202) |> json(%{issue_identifier: id, status: "queued", directive: directive})
+
+        case Orchestrator.queue_intervention(orchestrator(), id, directive) do
+          {:ok, payload} ->
+            conn |> put_status(202) |> json(payload)
+
+          {:error, :issue_not_found} ->
+            error_response(conn, 404, "issue_not_found", "Issue not found")
+        end
     end
   end
 

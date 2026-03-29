@@ -67,7 +67,9 @@ defmodule SymphonyElixir.Orchestrator do
       checkpoint_waiting: %{},
       dispatch_cooldowns: %{},
       circuit_breakers: %{},
-      terminal_issue_ids: MapSet.new()
+      terminal_issue_ids: MapSet.new(),
+      pending_interventions: %{},
+      activity_log: %{}
     ]
   end
 
@@ -1256,7 +1258,10 @@ defmodule SymphonyElixir.Orchestrator do
                runtime: runtime,
                max_turns: config.agent.max_turns,
                active_states: config.tracker.active_states,
-               context_window_tokens: config.agent.context_window_tokens
+               context_window_tokens: config.agent.context_window_tokens,
+               intervention_fetcher: fn issue_id ->
+                 consume_interventions(recipient, issue_id)
+               end
              )
            end) do
         {:ok, pid} ->
@@ -1920,7 +1925,111 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  @spec queue_intervention(GenServer.server(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, :issue_not_found}
+  def queue_intervention(server \\ __MODULE__, issue_identifier, directive)
+      when is_binary(issue_identifier) and is_binary(directive) do
+    if Process.whereis(server) do
+      GenServer.call(server, {:queue_intervention, issue_identifier, directive})
+    else
+      {:error, :issue_not_found}
+    end
+  end
+
+  @spec consume_interventions(GenServer.server(), String.t()) :: [String.t()]
+  def consume_interventions(server \\ __MODULE__, issue_id) when is_binary(issue_id) do
+    if Process.whereis(server) do
+      GenServer.call(server, {:consume_interventions, issue_id})
+    else
+      []
+    end
+  end
+
+  @spec issue_activity(GenServer.server(), String.t(), String.t() | nil) ::
+          {:ok, list(map())} | {:error, :issue_not_found}
+  def issue_activity(server \\ __MODULE__, issue_identifier, since \\ nil)
+      when is_binary(issue_identifier) do
+    if Process.whereis(server) do
+      GenServer.call(server, {:issue_activity, issue_identifier, since})
+    else
+      {:error, :issue_not_found}
+    end
+  end
+
   @impl true
+  def handle_call({:queue_intervention, issue_identifier, directive}, _from, state) do
+    case intervention_target(state, issue_identifier) do
+      {:ok, issue_id, resolved_identifier} ->
+        entry = %{
+          directive: directive,
+          issue_identifier: resolved_identifier,
+          queued_at: DateTime.utc_now()
+        }
+
+        pending_interventions =
+          Map.update(state.pending_interventions, issue_id, [entry], &(&1 ++ [entry]))
+
+        queued_count = pending_interventions |> Map.get(issue_id, []) |> length()
+
+        state =
+          %{state | pending_interventions: pending_interventions}
+          |> log_activity(
+            resolved_identifier,
+            "intervention_queued",
+            "Directive queued for next turn",
+            %{directive: directive, queued_count: queued_count}
+          )
+
+        {:reply,
+         {:ok,
+          %{
+            issue_identifier: resolved_identifier,
+            status: "queued",
+            directive: directive,
+            queued_count: queued_count
+          }}, state}
+
+      :error ->
+        {:reply, {:error, :issue_not_found}, state}
+    end
+  end
+
+  def handle_call({:consume_interventions, issue_id}, _from, state) do
+    case Map.pop(state.pending_interventions, issue_id) do
+      {nil, _pending_interventions} ->
+        {:reply, [], state}
+
+      {entries, pending_interventions} ->
+        state =
+          Enum.reduce(entries, %{state | pending_interventions: pending_interventions}, fn entry, acc ->
+            log_activity(
+              acc,
+              entry.issue_identifier,
+              "intervention_applied",
+              "Directive applied at the start of a new turn",
+              %{directive: entry.directive}
+            )
+          end)
+
+        {:reply, Enum.map(entries, & &1.directive), state}
+    end
+  end
+
+  def handle_call({:issue_activity, issue_identifier, since}, _from, state) do
+    case intervention_target(state, issue_identifier) do
+      {:ok, _issue_id, resolved_identifier} ->
+        items =
+          state.activity_log
+          |> Map.get(resolved_identifier, [])
+          |> filter_activity_since(since)
+
+        {:reply, {:ok, items}, state}
+
+      :error ->
+        {:reply, {:error, :issue_not_found}, state}
+    end
+  end
+
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
     now = DateTime.utc_now()
@@ -2814,6 +2923,60 @@ defmodule SymphonyElixir.Orchestrator do
       {num, _} when num >= 0 -> num
       _ -> nil
     end
+  end
+
+  defp intervention_target(%State{} = state, issue_identifier) when is_binary(issue_identifier) do
+    running_match =
+      Enum.find(state.running, fn {_issue_id, entry} ->
+        Map.get(entry, :identifier) == issue_identifier
+      end)
+
+    retry_match =
+      Enum.find(state.retry_attempts, fn {_issue_id, entry} ->
+        Map.get(entry, :identifier) == issue_identifier
+      end)
+
+    cond do
+      match?({issue_id, _entry} when is_binary(issue_id), running_match) ->
+        {issue_id, entry} = running_match
+        {:ok, issue_id, Map.get(entry, :identifier, issue_identifier)}
+
+      match?({issue_id, _entry} when is_binary(issue_id), retry_match) ->
+        {issue_id, entry} = retry_match
+        {:ok, issue_id, Map.get(entry, :identifier, issue_identifier)}
+
+      true ->
+        :error
+    end
+  end
+
+  defp filter_activity_since(items, nil), do: items
+
+  defp filter_activity_since(items, since) when is_binary(since) do
+    case DateTime.from_iso8601(since) do
+      {:ok, since_dt, _offset} ->
+        Enum.filter(items, fn item ->
+          case DateTime.from_iso8601(Map.get(item, :at) || "") do
+            {:ok, item_dt, _offset} -> DateTime.compare(item_dt, since_dt) == :gt
+            _ -> true
+          end
+        end)
+
+      _ ->
+        items
+    end
+  end
+
+  defp log_activity(%State{} = state, issue_identifier, event, message, metadata \\ %{})
+       when is_binary(issue_identifier) and is_binary(event) and is_binary(message) and is_map(metadata) do
+    item =
+      metadata
+      |> Map.put(:at, DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601())
+      |> Map.put(:event, event)
+      |> Map.put(:message, message)
+
+    activity_items = Map.get(state.activity_log, issue_identifier, []) ++ [item]
+    %{state | activity_log: Map.put(state.activity_log, issue_identifier, activity_items)}
   end
 
   defp integer_like(_value), do: nil
