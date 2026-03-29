@@ -4,7 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.{AgentBackend, ErrorClassifier, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{AgentBackend, ErrorClassifier, Intervention, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
   defmodule RunError do
     @moduledoc false
@@ -151,7 +151,8 @@ defmodule SymphonyElixir.AgentRunner do
          context_monitor
        ) do
     turn_start_ms = System.monotonic_time(:millisecond)
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+    base_prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+    prompt = maybe_prepend_intervention(base_prompt, issue)
     prompt_suffix = context_prompt_suffix(context_monitor)
     Process.put(:agent_runner_latest_usage, nil)
 
@@ -775,4 +776,18 @@ defmodule SymphonyElixir.AgentRunner do
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
+
+  defp maybe_prepend_intervention(prompt, %Issue{id: issue_id} = issue) when is_binary(issue_id) do
+    case Intervention.dequeue(issue_id) do
+      nil ->
+        prompt
+
+      directive when is_binary(directive) ->
+        Logger.info("Injecting operator directive for #{issue_context(issue)}: #{String.slice(directive, 0, 80)}")
+
+        "[Operator Directive]: #{directive}\n\n#{prompt}"
+    end
+  end
+
+  defp maybe_prepend_intervention(prompt, _issue), do: prompt
 end

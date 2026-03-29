@@ -6,6 +6,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   use Phoenix.Controller, formats: [:json]
 
   alias Plug.Conn
+  alias SymphonyElixir.{ActivityLog, Intervention, Orchestrator}
   alias SymphonyElixirWeb.{Endpoint, Presenter}
 
   @spec state(Conn.t(), map()) :: Conn.t()
@@ -42,6 +43,12 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec completion_reports(Conn.t(), map()) :: Conn.t()
+  def completion_reports(conn, _params) do
+    reports = SymphonyElixir.CompletionReportStore.list()
+    json(conn, %{reports: reports})
+  end
+
   @spec completed_issues(Conn.t(), map()) :: Conn.t()
   def completed_issues(conn, _params) do
     generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
@@ -52,7 +59,21 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   def issue_activity(conn, %{"id" => id} = params) do
     since = Map.get(params, "since")
     generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-    json(conn, %{issue_identifier: id, items: [], has_more: false, since: since, generated_at: generated_at})
+
+    items =
+      if is_binary(since) and since != "" do
+        ActivityLog.get_since(id, since)
+      else
+        ActivityLog.get(id)
+      end
+
+    json(conn, %{
+      issue_identifier: id,
+      items: items,
+      has_more: false,
+      since: since,
+      generated_at: generated_at
+    })
   end
 
   @spec issue_tokens(Conn.t(), map()) :: Conn.t()
@@ -76,7 +97,35 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
 
       true ->
         directive = String.trim(raw)
-        conn |> put_status(202) |> json(%{issue_identifier: id, status: "queued", directive: directive})
+        do_issue_intervene(conn, id, directive)
+    end
+  end
+
+  defp do_issue_intervene(conn, issue_identifier, directive) do
+    snapshot = Orchestrator.snapshot(orchestrator(), snapshot_timeout_ms())
+
+    running_entry =
+      case snapshot do
+        %{running: running} -> Enum.find(running, &(&1.identifier == issue_identifier))
+        _ -> nil
+      end
+
+    case running_entry do
+      nil ->
+        error_response(conn, 404, "issue_not_running", "Issue not running")
+
+      %{issue_id: issue_id} ->
+        queued_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+
+        case Intervention.enqueue(issue_id, directive) do
+          :ok ->
+            conn
+            |> put_status(202)
+            |> json(%{issue_identifier: issue_identifier, directive: directive, queued_at: queued_at, status: "queued"})
+
+          {:error, :queue_full} ->
+            error_response(conn, 429, "queue_full", "Intervention queue full")
+        end
     end
   end
 
