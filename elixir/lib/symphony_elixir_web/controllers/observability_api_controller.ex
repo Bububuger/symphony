@@ -129,6 +129,46 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec webhook_linear(Conn.t(), map()) :: Conn.t()
+  def webhook_linear(conn, params) do
+    with :ok <- verify_webhook_secret(conn) do
+      action = Map.get(params, "action")
+      type = Map.get(params, "type")
+
+      if type == "Issue" and action in ["create", "update"] do
+        issue_data = Map.get(params, "data", %{})
+        target = resolve_orchestrator_pid()
+        if is_pid(target), do: send(target, {:webhook_issue_event, issue_data})
+      end
+
+      json(conn, %{ok: true})
+    else
+      {:error, :unauthorized} ->
+        error_response(conn, 401, "unauthorized", "Invalid webhook secret")
+    end
+  end
+
+  # If SYMPHONY_WEBHOOK_SECRET is set, require matching X-Symphony-Secret header.
+  # When unset, the endpoint is open (suitable for internal/firewalled deployments).
+  defp verify_webhook_secret(conn) do
+    case System.get_env("SYMPHONY_WEBHOOK_SECRET") do
+      nil -> :ok
+      "" -> :ok
+      secret ->
+        header = get_req_header(conn, "x-symphony-secret") |> List.first()
+        if header == secret, do: :ok, else: {:error, :unauthorized}
+    end
+  end
+
+  defp resolve_orchestrator_pid do
+    case :global.whereis_name(:symphony_coordinator) do
+      :undefined ->
+        name = orchestrator()
+        if is_atom(name), do: Process.whereis(name), else: name
+      pid -> pid
+    end
+  end
+
   @spec shutdown(Conn.t(), map()) :: Conn.t()
   def shutdown(conn, params) do
     timeout_ms = case Map.get(params, "timeout_ms") do
