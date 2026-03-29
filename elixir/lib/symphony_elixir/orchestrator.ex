@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, ErrorClassifier, RateLimitCircuitBreaker, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{ActivityLog, AgentRunner, Config, ErrorClassifier, Intervention, RateLimitCircuitBreaker, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_base_delay_ms 5_000
@@ -45,12 +45,12 @@ defmodule SymphonyElixir.Orchestrator do
       :max_concurrent_agents,
       :next_poll_due_at_ms,
       :poll_check_in_progress,
-      shutdown_in_progress?: false,
       :tick_timer_ref,
       :tick_token,
       :workspace_usage_bytes,
       :workspace_usage_refresh_ref,
       :workspace_threshold_exceeded?,
+      shutdown_in_progress?: false,
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
@@ -192,6 +192,8 @@ defmodule SymphonyElixir.Orchestrator do
 
                     identifier = running_entry.identifier
                     cleanup_issue_workspace(identifier)
+                    store_completion_report(running_entry, :success, nil)
+                    ActivityLog.complete(identifier, build_outcome_event(running_entry, "issue_completed", nil))
 
                     state
                     |> complete_issue(issue_id)
@@ -227,6 +229,12 @@ defmodule SymphonyElixir.Orchestrator do
                   error_class_label = ErrorClassifier.to_string(error_class)
 
                   Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)} error_class=#{error_class_label} next_retry_attempt=#{failure_attempt}")
+
+                  if not ErrorClassifier.retry_allowed?(error_class, failure_attempt) do
+                    store_completion_report(running_entry, :failure, inspect(reason))
+                    identifier = running_entry[:identifier] || issue_id
+                    ActivityLog.complete(identifier, build_outcome_event(running_entry, "issue_failed", inspect(reason)))
+                  end
 
                   handle_worker_failure(
                     state,
@@ -265,6 +273,9 @@ defmodule SymphonyElixir.Orchestrator do
           |> apply_codex_rate_limits(update)
           |> record_turn_token_usage(issue_id, updated_running_entry, update)
 
+        identifier = Map.get(updated_running_entry, :identifier, issue_id)
+        append_activity_event(identifier, updated_running_entry, update)
+        broadcast_agent_event(identifier, updated_running_entry, update)
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
     end
@@ -538,6 +549,18 @@ defmodule SymphonyElixir.Orchestrator do
     waves
   end
 
+  @doc false
+  @spec stall_elapsed_ms_for_test(map() | nil, DateTime.t()) :: non_neg_integer() | nil
+  def stall_elapsed_ms_for_test(running_entry, %DateTime{} = now) do
+    stall_elapsed_ms(running_entry, now)
+  end
+
+  @doc false
+  @spec reconcile_stalled_running_issues_for_test(term()) :: term()
+  def reconcile_stalled_running_issues_for_test(%State{} = state) do
+    reconcile_stalled_running_issues(state)
+  end
+
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
 
   defp reconcile_running_issue_states([issue | rest], state, active_states, terminal_states) do
@@ -553,6 +576,10 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
+
+        running_entry = Map.get(state.running, issue.id)
+        terminal_result = if issue.state |> String.downcase() |> String.contains?(["done", "complete", "resolved", "closed"]), do: :success, else: :failure
+        store_completion_report(running_entry, terminal_result, nil)
 
         state
         |> clear_terminal_issue_id(issue.id)
@@ -644,6 +671,9 @@ defmodule SymphonyElixir.Orchestrator do
         if is_reference(ref) do
           Process.demonitor(ref, [:flush])
         end
+
+        ActivityLog.complete(identifier, build_outcome_event(running_entry, "issue_terminated", nil))
+        Intervention.clear(issue_id)
 
         %{
           state
@@ -2924,6 +2954,178 @@ defmodule SymphonyElixir.Orchestrator do
         Process.sleep(min(500, remaining_ms))
         wait_for_running_pids(still_alive, deadline_ms)
       end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Completion report helpers
+  # ---------------------------------------------------------------------------
+
+  defp store_completion_report(running_entry, result, error) when is_map(running_entry) do
+    now = DateTime.utc_now()
+    started_at = Map.get(running_entry, :started_at)
+
+    duration_ms =
+      case started_at do
+        %DateTime{} -> max(0, DateTime.diff(now, started_at, :millisecond))
+        _ -> 0
+      end
+
+    input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
+    output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
+    total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+    turns = Map.get(running_entry, :turn_count, 0)
+
+    tokens_per_turn =
+      if is_integer(turns) and turns > 0 do
+        total_tokens / turns
+      else
+        0.0
+      end
+
+    issue = Map.get(running_entry, :issue)
+
+    issue_id =
+      case issue do
+        %{id: id} when is_binary(id) -> id
+        _ -> Map.get(running_entry, :identifier)
+      end
+
+    issue_identifier = Map.get(running_entry, :identifier)
+
+    report = %{
+      issue_id: issue_id,
+      issue_identifier: issue_identifier,
+      runtime_name: Map.get(running_entry, :runtime_name),
+      result: result,
+      started_at: started_at,
+      finished_at: now,
+      duration_ms: duration_ms,
+      turns: turns,
+      tokens: %{input: input_tokens, output: output_tokens, total: total_tokens},
+      tokens_per_turn: tokens_per_turn,
+      error: error
+    }
+
+    SymphonyElixir.CompletionReportStore.store(report)
+  end
+
+  defp store_completion_report(_running_entry, _result, _error), do: :ok
+
+  # ---------------------------------------------------------------------------
+  # ActivityLog helpers
+  # ---------------------------------------------------------------------------
+
+  # Map a raw codex event atom/string to the canonical activity log event name.
+  defp activity_event_name(:session_started), do: "turn_started"
+  defp activity_event_name(:turn_started), do: "turn_started"
+  defp activity_event_name(:tool_call), do: "tool_called"
+  defp activity_event_name(:turn_completed), do: "turn_completed"
+  defp activity_event_name(:session_stopped), do: "turn_completed"
+  defp activity_event_name(:turn_failed), do: "turn_completed"
+  defp activity_event_name(other) when is_atom(other), do: Atom.to_string(other)
+  defp activity_event_name(other) when is_binary(other), do: other
+  defp activity_event_name(_), do: "unknown"
+
+  defp activity_detail_from_update(%{event: :tool_call} = update) do
+    tool = Map.get(update, :tool)
+    payload = Map.get(update, :payload)
+
+    cond do
+      is_binary(tool) and tool != "" ->
+        args_summary = if is_map(payload), do: inspect(payload) |> String.slice(0, 200), else: ""
+        if args_summary == "", do: tool, else: "#{tool} #{args_summary}"
+
+      is_map(payload) ->
+        inspect(payload) |> String.slice(0, 500)
+
+      true ->
+        nil
+    end
+  end
+
+  defp activity_detail_from_update(_update), do: nil
+
+  defp append_activity_event(issue_id, running_entry, update) do
+    event_name = activity_event_name(Map.get(update, :event))
+    turn = Map.get(running_entry, :turn_count, 0)
+    detail = activity_detail_from_update(update)
+    input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
+    output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
+
+    event_map = %{
+      timestamp:
+        Map.get(update, :timestamp) ||
+          DateTime.utc_now() |> DateTime.truncate(:millisecond) |> DateTime.to_iso8601(),
+      event: event_name,
+      turn: turn,
+      detail: detail,
+      tokens: %{input: input_tokens, output: output_tokens}
+    }
+
+    ActivityLog.append(issue_id, event_map)
+  end
+
+  defp build_outcome_event(running_entry, event_name, detail) do
+    turn = Map.get(running_entry, :turn_count, 0)
+    input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
+    output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
+
+    %{
+      timestamp: DateTime.utc_now() |> DateTime.truncate(:millisecond) |> DateTime.to_iso8601(),
+      event: event_name,
+      turn: turn,
+      detail: detail,
+      tokens: %{input: input_tokens, output: output_tokens}
+    }
+  end
+
+  # ---------------------------------------------------------------------------
+  # PubSub broadcast helpers
+  # ---------------------------------------------------------------------------
+
+  defp broadcast_agent_event(issue_id, running_entry, update) do
+    pubsub = SymphonyElixir.PubSub
+
+    case Process.whereis(pubsub) do
+      pid when is_pid(pid) ->
+        event_type = map_event_type(update[:event])
+        detail = build_event_detail(update)
+        turn = Map.get(running_entry, :turn_count, 0)
+
+        tokens = %{
+          input: Map.get(running_entry, :codex_input_tokens, 0),
+          output: Map.get(running_entry, :codex_output_tokens, 0)
+        }
+
+        payload = %{
+          event: event_type,
+          turn: turn,
+          detail: String.slice(detail, 0, 500),
+          tokens: tokens,
+          timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
+        }
+
+        Phoenix.PubSub.broadcast(pubsub, "agent:#{issue_id}", {:agent_event, payload})
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp map_event_type(:session_started), do: "turn_started"
+  defp map_event_type(:tool_call), do: "tool_called"
+  defp map_event_type(:tool_result), do: "tool_called"
+  defp map_event_type(:assistant_message), do: "text_output"
+  defp map_event_type(:session_stopped), do: "turn_completed"
+  defp map_event_type(other), do: to_string(other)
+
+  defp build_event_detail(update) do
+    cond do
+      is_binary(update[:payload]) -> update[:payload]
+      is_binary(update[:raw]) -> update[:raw]
+      is_map(update[:payload]) -> inspect(update[:payload])
+      true -> to_string(update[:event])
     end
   end
 end

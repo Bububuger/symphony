@@ -1639,7 +1639,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "hooks.before_run defaults to git-pull command when not set in WORKFLOW.md" do
     write_workflow_file!(Workflow.workflow_file_path(), hook_before_run: nil)
     config = Config.settings!()
-    assert config.hooks.before_run == "git fetch origin main && git merge origin/main --no-edit"
+    assert config.hooks.before_run ==
+             "git rev-parse --git-dir > /dev/null 2>&1 && git fetch origin main && git merge origin/main --no-edit || true"
   end
 
   test "hooks.before_run is preserved when explicitly set in WORKFLOW.md" do

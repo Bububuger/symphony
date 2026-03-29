@@ -10,6 +10,8 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
 
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
 
+  @max_agent_events 50
+
   @impl true
   def mount(%{"identifier" => identifier}, _session, socket) do
     socket =
@@ -18,9 +20,11 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
       |> assign(:issue, load_issue(identifier))
       |> assign(:tokens, load_tokens(identifier))
       |> assign(:now, DateTime.utc_now())
+      |> assign(:agent_events, [])
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
+      :ok = Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "agent:#{identifier}")
     end
 
     {:ok, socket}
@@ -38,6 +42,12 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
   end
 
   @impl true
+  def handle_info({:agent_event, event}, socket) do
+    events = [event | socket.assigns.agent_events] |> Enum.take(@max_agent_events)
+    {:noreply, assign(socket, :agent_events, events)}
+  end
+
+  @impl true
   def handle_event("intervene", %{"directive" => directive}, socket) do
     trimmed = String.trim(directive)
 
@@ -51,6 +61,8 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
 
   @impl true
   def render(assigns) do
+    assigns = assign(assigns, :max_agent_events, @max_agent_events)
+
     ~H"""
     <section class="dashboard-shell">
       <header class="hero-card">
@@ -188,10 +200,33 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
           <div class="section-header">
             <div>
               <h2 class="section-title">Activity timeline</h2>
-              <p class="section-copy">Full event log for this issue (BUB-188 pending).</p>
+              <p class="section-copy">Real-time agent events (last <%= @max_agent_events %>, newest first).</p>
             </div>
           </div>
-          <p class="empty-state">Activity log not yet available.</p>
+          <%= if @agent_events == [] do %>
+            <p class="empty-state">No agent events yet — events will appear here as the agent runs.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 560px;">
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Event</th>
+                    <th>Turn</th>
+                    <th>Detail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={ev <- @agent_events}>
+                    <td class="mono" style="white-space: nowrap; font-size: 0.8rem;"><%= ev.timestamp %></td>
+                    <td><span class={event_badge_class(ev.event)}><%= ev.event %></span></td>
+                    <td class="numeric"><%= ev.turn %></td>
+                    <td style="font-size: 0.85rem; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"><%= ev.detail %></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
         </section>
       <% end %>
     </section>
@@ -218,6 +253,18 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
 
   defp snapshot_timeout_ms do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
+  end
+
+  defp event_badge_class(event) do
+    base = "state-badge"
+
+    case event do
+      "turn_started" -> "#{base} state-badge-warning"
+      "turn_completed" -> "#{base} state-badge-active"
+      "tool_called" -> "#{base} state-badge-active"
+      "text_output" -> base
+      _ -> base
+    end
   end
 
   defp state_badge_class(state) do
