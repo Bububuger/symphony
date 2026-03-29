@@ -5,7 +5,7 @@ metadata:
   labels:
     app: symphony
 spec:
-  replicas: 3
+  replicas: 1  # Scale to 1 until BUB-206 (libcluster+Horde) adds cluster coordination
   selector:
     matchLabels:
       app: symphony
@@ -68,7 +68,8 @@ spec:
         - name: workspaces
           mountPath: /workspaces
         - name: workflow-config
-          mountPath: /config
+          mountPath: /app/WORKFLOW.md  # app reads File.cwd!/WORKFLOW.md = /app/WORKFLOW.md
+          subPath: WORKFLOW.md
           readOnly: true
       volumes:
       - name: workspaces

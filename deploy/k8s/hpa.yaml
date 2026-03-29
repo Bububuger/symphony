@@ -10,13 +10,14 @@ spec:
   minReplicas: 1
   maxReplicas: 20
   metrics:
-  - type: Pods
-    pods:
-      metric:
-        name: symphony_running_ratio
+  # Use CPU utilization as the primary scaling signal (Symphony agents are CPU+IO bound).
+  # Replace with a custom symphony_running_ratio metric once BUB-206 exposes it via /metrics.
+  - type: Resource
+    resource:
+      name: cpu
       target:
-        type: AverageValue
-        averageValue: "800m"
+        type: Utilization
+        averageUtilization: 70
   behavior:
     scaleUp:
       stabilizationWindowSeconds: 60
