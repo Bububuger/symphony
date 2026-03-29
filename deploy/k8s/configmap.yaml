@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: symphony-workflow
+data:
+  WORKFLOW.md: |
+    # Paste your WORKFLOW.md content here or mount from a separate ConfigMap
+    # See deploy/k8s/README.md for configuration instructions

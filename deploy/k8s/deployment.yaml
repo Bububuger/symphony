@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: symphony
+  labels:
+    app: symphony
+spec:
+  replicas: 1  # Scale to 1 until BUB-206 (libcluster+Horde) adds cluster coordination
+  selector:
+    matchLabels:
+      app: symphony
+  template:
+    metadata:
+      labels:
+        app: symphony
+    spec:
+      containers:
+      - name: symphony
+        image: symphony:latest
+        ports:
+        - name: http
+          containerPort: 4000
+        - name: epmd
+          containerPort: 4369
+        - name: erlang-dist
+          containerPort: 9100
+        env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: RELEASE_NODE
+          value: "symphony@$(POD_IP)"
+        - name: RELEASE_DISTRIBUTION
+          value: "name"
+        - name: RELEASE_COOKIE
+          valueFrom:
+            secretKeyRef:
+              name: symphony-secrets
+              key: release-cookie
+        - name: LINEAR_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: symphony-secrets
+              key: linear-api-key
+        - name: SYMPHONY_PORT
+          value: "4000"
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 2000m
+            memory: 2Gi
+        livenessProbe:
+          httpGet:
+            path: /api/v1/state
+            port: 4000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /api/v1/state
+            port: 4000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+        - name: workspaces
+          mountPath: /workspaces
+        - name: workflow-config
+          mountPath: /app/WORKFLOW.md  # app reads File.cwd!/WORKFLOW.md = /app/WORKFLOW.md
+          subPath: WORKFLOW.md
+          readOnly: true
+      volumes:
+      - name: workspaces
+        emptyDir:
+          sizeLimit: 20Gi
+      - name: workflow-config
+        configMap:
+          name: symphony-workflow

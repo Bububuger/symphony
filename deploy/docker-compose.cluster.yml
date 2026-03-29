@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  symphony-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - RELEASE_NODE=symphony@symphony-1
+      - RELEASE_COOKIE=local_dev_cookie
+      - LIBCLUSTER_STRATEGY=Cluster.Strategy.Epmd
+      - LIBCLUSTER_HOSTS=symphony@symphony-1,symphony@symphony-2,symphony@symphony-3
+      - SYMPHONY_PORT=4001
+    ports:
+      - "4001:4001"
+    volumes:
+      - ./elixir/WORKFLOW.md:/config/WORKFLOW.md:ro
+    networks:
+      - symphony-cluster
+
+  symphony-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - RELEASE_NODE=symphony@symphony-2
+      - RELEASE_COOKIE=local_dev_cookie
+      - LIBCLUSTER_STRATEGY=Cluster.Strategy.Epmd
+      - LIBCLUSTER_HOSTS=symphony@symphony-1,symphony@symphony-2,symphony@symphony-3
+      - SYMPHONY_PORT=4002
+    ports:
+      - "4002:4002"
+    volumes:
+      - ./elixir/WORKFLOW.md:/config/WORKFLOW.md:ro
+    networks:
+      - symphony-cluster
+
+  symphony-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - RELEASE_NODE=symphony@symphony-3
+      - RELEASE_COOKIE=local_dev_cookie
+      - LIBCLUSTER_STRATEGY=Cluster.Strategy.Epmd
+      - LIBCLUSTER_HOSTS=symphony@symphony-1,symphony@symphony-2,symphony@symphony-3
+      - SYMPHONY_PORT=4003
+    ports:
+      - "4003:4003"
+    volumes:
+      - ./elixir/WORKFLOW.md:/config/WORKFLOW.md:ro
+    networks:
+      - symphony-cluster
+
+networks:
+  symphony-cluster:
+    driver: bridge
