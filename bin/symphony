@@ -290,7 +290,12 @@ print('Directive queued for ' + ident + ': ' + directive)
     ;;
 
   doctor)
-    setup_env
+    # Do NOT call setup_env — doctor is meant to diagnose missing credentials;
+    # reading from Keychain would abort the shell before diagnostics run.
+    export HOME="/Users/javis"
+    export MIX_HOME="/Users/javis/.local/share/mise/installs/elixir/1.19.5-otp-28/.mix"
+    export MIX_ARCHIVES="${MIX_HOME}/archives"
+    export PATH="/Users/javis/.local/share/mise/installs/erlang/28.4.1/bin:/Users/javis/.local/share/mise/installs/elixir/1.19.5-otp-28/bin:${MIX_HOME}/escripts:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
     exec "$SYMPHONY_BIN" "doctor"
     ;;
 
