@@ -330,6 +330,16 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info({:workspace_usage_sample, _refresh_ref, _source, _usage_result}, state),
     do: {:noreply, state}
 
+  def handle_info({:webhook_issue_event, _issue_data}, %State{shutdown_in_progress?: true} = state),
+    do: {:noreply, state}
+
+  def handle_info({:webhook_issue_event, _issue_data}, state) do
+    # Immediately trigger a dispatch cycle (same as poll timer) to reduce latency to <1s
+    new_state = maybe_dispatch(state)
+    notify_dashboard()
+    {:noreply, new_state}
+  end
+
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
