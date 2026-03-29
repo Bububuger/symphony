@@ -42,6 +42,12 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec completion_reports(Conn.t(), map()) :: Conn.t()
+  def completion_reports(conn, _params) do
+    reports = SymphonyElixir.CompletionReportStore.list()
+    json(conn, %{reports: reports})
+  end
+
   @spec completed_issues(Conn.t(), map()) :: Conn.t()
   def completed_issues(conn, _params) do
     generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
