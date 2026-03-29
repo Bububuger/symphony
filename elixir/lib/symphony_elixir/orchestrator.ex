@@ -45,12 +45,12 @@ defmodule SymphonyElixir.Orchestrator do
       :max_concurrent_agents,
       :next_poll_due_at_ms,
       :poll_check_in_progress,
-      shutdown_in_progress?: false,
       :tick_timer_ref,
       :tick_token,
       :workspace_usage_bytes,
       :workspace_usage_refresh_ref,
       :workspace_threshold_exceeded?,
+      shutdown_in_progress?: false,
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
@@ -318,6 +318,16 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:workspace_usage_sample, _refresh_ref, _source, _usage_result}, state),
     do: {:noreply, state}
+
+  def handle_info({:webhook_issue_event, _issue_data}, %State{shutdown_in_progress?: true} = state),
+    do: {:noreply, state}
+
+  def handle_info({:webhook_issue_event, _issue_data}, state) do
+    # Immediately trigger a dispatch cycle (same as poll timer) to reduce latency to <1s
+    new_state = maybe_dispatch(state)
+    notify_dashboard()
+    {:noreply, new_state}
+  end
 
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
