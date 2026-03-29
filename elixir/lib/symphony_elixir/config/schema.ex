@@ -514,7 +514,7 @@ defmodule SymphonyElixir.Config.Schema do
 
   # ── zero-config hook defaults ────────────────────────────────────────────────
 
-  @default_before_run "git fetch origin main && git merge origin/main --no-edit || true"
+  @default_before_run "git fetch origin main && git merge origin/main --no-edit"
 
   defp finalize_hooks(%Hooks{} = hooks) do
     # YAML literal block scalars add a trailing newline; strip it for cleaner hook values
