@@ -192,6 +192,7 @@ defmodule SymphonyElixir.Orchestrator do
 
                     identifier = running_entry.identifier
                     cleanup_issue_workspace(identifier)
+                    store_completion_report(running_entry, :success, nil)
 
                     state
                     |> complete_issue(issue_id)
@@ -227,6 +228,10 @@ defmodule SymphonyElixir.Orchestrator do
                   error_class_label = ErrorClassifier.to_string(error_class)
 
                   Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)} error_class=#{error_class_label} next_retry_attempt=#{failure_attempt}")
+
+                  if not ErrorClassifier.retry_allowed?(error_class, failure_attempt) do
+                    store_completion_report(running_entry, :failure, inspect(reason))
+                  end
 
                   handle_worker_failure(
                     state,
@@ -565,6 +570,10 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
+
+        running_entry = Map.get(state.running, issue.id)
+        terminal_result = if issue.state |> String.downcase() |> String.contains?(["done", "complete", "resolved", "closed"]), do: :success, else: :failure
+        store_completion_report(running_entry, terminal_result, nil)
 
         state
         |> clear_terminal_issue_id(issue.id)
@@ -2938,4 +2947,59 @@ defmodule SymphonyElixir.Orchestrator do
       end
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Completion report helpers
+  # ---------------------------------------------------------------------------
+
+  defp store_completion_report(running_entry, result, error) when is_map(running_entry) do
+    now = DateTime.utc_now()
+    started_at = Map.get(running_entry, :started_at)
+
+    duration_ms =
+      case started_at do
+        %DateTime{} -> max(0, DateTime.diff(now, started_at, :millisecond))
+        _ -> 0
+      end
+
+    input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
+    output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
+    total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+    turns = Map.get(running_entry, :turn_count, 0)
+
+    tokens_per_turn =
+      if is_integer(turns) and turns > 0 do
+        total_tokens / turns
+      else
+        0.0
+      end
+
+    issue = Map.get(running_entry, :issue)
+
+    issue_id =
+      case issue do
+        %{id: id} when is_binary(id) -> id
+        _ -> Map.get(running_entry, :identifier)
+      end
+
+    issue_identifier = Map.get(running_entry, :identifier)
+
+    report = %{
+      issue_id: issue_id,
+      issue_identifier: issue_identifier,
+      runtime_name: Map.get(running_entry, :runtime_name),
+      result: result,
+      started_at: started_at,
+      finished_at: now,
+      duration_ms: duration_ms,
+      turns: turns,
+      tokens: %{input: input_tokens, output: output_tokens, total: total_tokens},
+      tokens_per_turn: tokens_per_turn,
+      error: error
+    }
+
+    SymphonyElixir.CompletionReportStore.store(report)
+  end
+
+  defp store_completion_report(_running_entry, _result, _error), do: :ok
 end
