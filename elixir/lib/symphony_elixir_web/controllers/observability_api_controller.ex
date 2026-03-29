@@ -106,8 +106,8 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
         case Intervention.enqueue(issue_id, directive) do
           :ok ->
             conn
-            |> put_status(200)
-            |> json(%{issue_identifier: issue_identifier, directive: directive, queued_at: queued_at})
+            |> put_status(202)
+            |> json(%{issue_identifier: issue_identifier, directive: directive, queued_at: queued_at, status: "queued"})
 
           {:error, :queue_full} ->
             error_response(conn, 429, "queue_full", "Intervention queue full")

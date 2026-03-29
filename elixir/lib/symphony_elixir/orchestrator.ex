@@ -538,6 +538,18 @@ defmodule SymphonyElixir.Orchestrator do
     waves
   end
 
+  @doc false
+  @spec stall_elapsed_ms_for_test(map() | nil, DateTime.t()) :: non_neg_integer() | nil
+  def stall_elapsed_ms_for_test(running_entry, %DateTime{} = now) do
+    stall_elapsed_ms(running_entry, now)
+  end
+
+  @doc false
+  @spec reconcile_stalled_running_issues_for_test(term()) :: term()
+  def reconcile_stalled_running_issues_for_test(%State{} = state) do
+    reconcile_stalled_running_issues(state)
+  end
+
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
 
   defp reconcile_running_issue_states([issue | rest], state, active_states, terminal_states) do
