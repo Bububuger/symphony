@@ -6,7 +6,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   use Phoenix.Controller, formats: [:json]
 
   alias Plug.Conn
-  alias SymphonyElixir.{Intervention, Orchestrator}
+  alias SymphonyElixir.{ActivityLog, Intervention, Orchestrator}
   alias SymphonyElixirWeb.{Endpoint, Presenter}
 
   @spec state(Conn.t(), map()) :: Conn.t()
@@ -59,7 +59,21 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   def issue_activity(conn, %{"id" => id} = params) do
     since = Map.get(params, "since")
     generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-    json(conn, %{issue_identifier: id, items: [], has_more: false, since: since, generated_at: generated_at})
+
+    items =
+      if is_binary(since) and since != "" do
+        ActivityLog.get_since(id, since)
+      else
+        ActivityLog.get(id)
+      end
+
+    json(conn, %{
+      issue_identifier: id,
+      items: items,
+      has_more: false,
+      since: since,
+      generated_at: generated_at
+    })
   end
 
   @spec issue_tokens(Conn.t(), map()) :: Conn.t()

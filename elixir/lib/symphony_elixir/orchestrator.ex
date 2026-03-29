@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, ErrorClassifier, RateLimitCircuitBreaker, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{ActivityLog, AgentRunner, Config, ErrorClassifier, RateLimitCircuitBreaker, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_base_delay_ms 5_000
@@ -193,6 +193,7 @@ defmodule SymphonyElixir.Orchestrator do
                     identifier = running_entry.identifier
                     cleanup_issue_workspace(identifier)
                     store_completion_report(running_entry, :success, nil)
+                    ActivityLog.complete(issue_id, build_outcome_event(running_entry, "issue_completed", nil))
 
                     state
                     |> complete_issue(issue_id)
@@ -231,6 +232,7 @@ defmodule SymphonyElixir.Orchestrator do
 
                   if not ErrorClassifier.retry_allowed?(error_class, failure_attempt) do
                     store_completion_report(running_entry, :failure, inspect(reason))
+                    ActivityLog.complete(issue_id, build_outcome_event(running_entry, "issue_failed", inspect(reason)))
                   end
 
                   handle_worker_failure(
@@ -270,6 +272,7 @@ defmodule SymphonyElixir.Orchestrator do
           |> apply_codex_rate_limits(update)
           |> record_turn_token_usage(issue_id, updated_running_entry, update)
 
+        append_activity_event(issue_id, updated_running_entry, update)
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
     end
@@ -3002,4 +3005,72 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp store_completion_report(_running_entry, _result, _error), do: :ok
+
+  # ---------------------------------------------------------------------------
+  # ActivityLog helpers
+  # ---------------------------------------------------------------------------
+
+  # Map a raw codex event atom/string to the canonical activity log event name.
+  defp activity_event_name(:session_started), do: "turn_started"
+  defp activity_event_name(:turn_started), do: "turn_started"
+  defp activity_event_name(:tool_call), do: "tool_called"
+  defp activity_event_name(:turn_completed), do: "turn_completed"
+  defp activity_event_name(:session_stopped), do: "turn_completed"
+  defp activity_event_name(:turn_failed), do: "turn_completed"
+  defp activity_event_name(other) when is_atom(other), do: Atom.to_string(other)
+  defp activity_event_name(other) when is_binary(other), do: other
+  defp activity_event_name(_), do: "unknown"
+
+  defp activity_detail_from_update(%{event: :tool_call} = update) do
+    tool = Map.get(update, :tool)
+    payload = Map.get(update, :payload)
+
+    cond do
+      is_binary(tool) and tool != "" ->
+        args_summary = if is_map(payload), do: inspect(payload) |> String.slice(0, 200), else: ""
+        if args_summary == "", do: tool, else: "#{tool} #{args_summary}"
+
+      is_map(payload) ->
+        inspect(payload) |> String.slice(0, 500)
+
+      true ->
+        nil
+    end
+  end
+
+  defp activity_detail_from_update(_update), do: nil
+
+  defp append_activity_event(issue_id, running_entry, update) do
+    event_name = activity_event_name(Map.get(update, :event))
+    turn = Map.get(running_entry, :turn_count, 0)
+    detail = activity_detail_from_update(update)
+    input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
+    output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
+
+    event_map = %{
+      timestamp:
+        Map.get(update, :timestamp) ||
+          DateTime.utc_now() |> DateTime.truncate(:millisecond) |> DateTime.to_iso8601(),
+      event: event_name,
+      turn: turn,
+      detail: detail,
+      tokens: %{input: input_tokens, output: output_tokens}
+    }
+
+    ActivityLog.append(issue_id, event_map)
+  end
+
+  defp build_outcome_event(running_entry, event_name, detail) do
+    turn = Map.get(running_entry, :turn_count, 0)
+    input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
+    output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
+
+    %{
+      timestamp: DateTime.utc_now() |> DateTime.truncate(:millisecond) |> DateTime.to_iso8601(),
+      event: event_name,
+      turn: turn,
+      detail: detail,
+      tokens: %{input: input_tokens, output: output_tokens}
+    }
+  end
 end
