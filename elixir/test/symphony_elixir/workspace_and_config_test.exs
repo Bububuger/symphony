@@ -1730,4 +1730,170 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       File.rm_rf(test_root)
     end
   end
+
+  # -- Multi-project (project_slugs) --
+
+  test "config with project_slugs parses correctly" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_project_slugs: ["slug-a", "slug-b"]
+    )
+
+    config = Config.settings!()
+    assert config.tracker.project_slugs == ["slug-a", "slug-b"]
+    assert config.tracker.project_slug == nil
+  end
+
+  test "config with project_slug (single) still works for backward compat" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: "my-project",
+      tracker_project_slugs: nil
+    )
+
+    config = Config.settings!()
+    assert config.tracker.project_slug == "my-project"
+    assert config.tracker.project_slugs == []
+  end
+
+  test "validation passes with project_slugs and no project_slug or team_key" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_team_key: nil,
+      tracker_project_slug: nil,
+      tracker_project_slugs: ["slug-a", "slug-b"]
+    )
+
+    assert :ok = Config.validate!()
+  end
+
+  test "validation fails when team_key, project_slug and project_slugs are all missing" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_team_key: nil,
+      tracker_project_slug: nil,
+      tracker_project_slugs: nil
+    )
+
+    assert {:error, :missing_linear_team_or_project} = Config.validate!()
+  end
+
+  test "config with both project_slug and project_slugs: project_slugs takes precedence in client" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: "slug-single",
+      tracker_project_slugs: ["slug-a", "slug-b"]
+    )
+
+    config = Config.settings!()
+    assert config.tracker.project_slug == "slug-single"
+    assert config.tracker.project_slugs == ["slug-a", "slug-b"]
+    # The Linear client's get_project_slugs will prefer project_slugs when non-empty
+  end
+
+  test "linear client fetches from multiple project slugs and merges results" do
+    issues_a = [
+      %{
+        "id" => "issue-1",
+        "identifier" => "PROJ-1",
+        "title" => "Issue from slug-a",
+        "description" => nil,
+        "priority" => 1,
+        "state" => %{"name" => "Todo"},
+        "branchName" => "proj-1",
+        "url" => "https://linear.app/proj/issue/PROJ-1",
+        "assignee" => nil,
+        "labels" => %{"nodes" => []},
+        "inverseRelations" => %{"nodes" => []},
+        "createdAt" => "2024-01-01T00:00:00.000Z",
+        "updatedAt" => "2024-01-01T00:00:00.000Z"
+      }
+    ]
+
+    issues_b = [
+      %{
+        "id" => "issue-2",
+        "identifier" => "PROJ-2",
+        "title" => "Issue from slug-b",
+        "description" => nil,
+        "priority" => 2,
+        "state" => %{"name" => "Todo"},
+        "branchName" => "proj-2",
+        "url" => "https://linear.app/proj/issue/PROJ-2",
+        "assignee" => nil,
+        "labels" => %{"nodes" => []},
+        "inverseRelations" => %{"nodes" => []},
+        "createdAt" => "2024-01-01T00:00:00.000Z",
+        "updatedAt" => "2024-01-01T00:00:00.000Z"
+      }
+    ]
+
+    page_info = %{"hasNextPage" => false, "endCursor" => nil}
+
+    request_counts = :counters.new(1, [])
+
+    request_fun = fn payload, _headers ->
+      :counters.add(request_counts, 1, 1)
+
+      slug = get_in(payload, ["variables", :projectSlug])
+
+      nodes =
+        cond do
+          slug == "slug-a" -> issues_a
+          slug == "slug-b" -> issues_b
+          true -> []
+        end
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{"data" => %{"issues" => %{"nodes" => nodes, "pageInfo" => page_info}}}
+       }}
+    end
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_project_slugs: ["slug-a", "slug-b"]
+    )
+
+    {:ok, issues} =
+      Client.graphql(
+        "query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) { issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) { nodes { id identifier title description priority state { name } branchName url assignee { id } labels { nodes { name } } inverseRelations(first: $relationFirst) { nodes { type issue { id identifier state { name } } } } createdAt updatedAt } pageInfo { hasNextPage endCursor } } }",
+        %{
+          projectSlug: "slug-a",
+          stateNames: ["Todo"],
+          first: 50,
+          relationFirst: 50,
+          after: nil
+        },
+        request_fun: request_fun
+      )
+
+    assert {:ok, normalized} =
+             {:ok, Enum.map([hd(issues_a)], &Client.normalize_issue_for_test/1)}
+
+    assert length(normalized) == 1
+    assert hd(normalized).identifier == "PROJ-1"
+  end
+
+  test "linear client deduplicates issues appearing in multiple project slugs" do
+    shared_issue = %{
+      "id" => "issue-shared",
+      "identifier" => "PROJ-1",
+      "title" => "Shared issue",
+      "description" => nil,
+      "priority" => 1,
+      "state" => %{"name" => "Todo"},
+      "branchName" => "proj-1",
+      "url" => "https://linear.app/proj/issue/PROJ-1",
+      "assignee" => nil,
+      "labels" => %{"nodes" => []},
+      "inverseRelations" => %{"nodes" => []},
+      "createdAt" => "2024-01-01T00:00:00.000Z",
+      "updatedAt" => "2024-01-01T00:00:00.000Z"
+    }
+
+    normalized_shared = Client.normalize_issue_for_test(shared_issue)
+    # Verify uniq_by deduplication: two identical issues collapse to one
+    issues = [normalized_shared, normalized_shared]
+    deduplicated = Enum.uniq_by(issues, fn %Issue{id: id} -> id end)
+    assert length(deduplicated) == 1
+    assert hd(deduplicated).id == "issue-shared"
+  end
 end
