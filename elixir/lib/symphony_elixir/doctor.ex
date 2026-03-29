@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Doctor do
   if any check fails.
   """
 
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, Credentials}
   alias SymphonyElixir.Workflow
 
   @linear_endpoint "https://api.linear.app/graphql"
@@ -203,12 +203,7 @@ defmodule SymphonyElixir.Doctor do
           {:error, reason} -> {:error, reason}
         end
       end,
-      resolve_api_key: fn ->
-        case Config.settings() do
-          {:ok, %{tracker: %{api_key: key}}} when is_binary(key) and key != "" -> key
-          _ -> nil
-        end
-      end,
+      resolve_api_key: fn -> Credentials.resolve("LINEAR_API_KEY") end,
       test_linear_connection: &test_linear_connection/1,
       find_executable: &System.find_executable/1,
       test_git_remote: &test_git_remote/1,

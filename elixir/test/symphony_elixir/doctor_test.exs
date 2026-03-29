@@ -113,6 +113,26 @@ defmodule SymphonyElixir.DoctorTest do
     assert output =~ "API key"
   end
 
+  test "runtime deps resolve API key from the shared credential chain" do
+    previous = Application.get_env(:symphony_elixir, :credentials_fn)
+
+    on_exit(fn ->
+      if previous do
+        Application.put_env(:symphony_elixir, :credentials_fn, previous)
+      else
+        Application.delete_env(:symphony_elixir, :credentials_fn)
+      end
+    end)
+
+    Application.put_env(:symphony_elixir, :credentials_fn, fn
+      "LINEAR_API_KEY" -> "token-from-chain"
+      _ -> nil
+    end)
+
+    deps = Doctor.runtime_deps()
+    assert deps.resolve_api_key.() == "token-from-chain"
+  end
+
   # ── agent backend check ───────────────────────────────────────────────────────
 
   test "reports failure when codex binary is not in PATH" do
