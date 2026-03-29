@@ -340,86 +340,62 @@ defmodule SymphonyElixir.ExtensionsTest do
     conn = get(build_conn(), "/api/v1/state")
     state_payload = json_response(conn, 200)
 
-    assert state_payload == %{
-             "generated_at" => state_payload["generated_at"],
-             "counts" => %{
-               "running" => 1,
-               "retrying" => 1,
-               "checkpoint_human_verify" => 3,
-               "checkpoint_decision" => 1,
-               "checkpoint_human_action" => 2
-             },
-             "checkpoint_waiting" => %{
-               "human_verify" => 3,
-               "decision" => 1,
-               "human_action" => 2
-             },
-             "running" => [
-               %{
-                 "issue_id" => "issue-http",
-                 "issue_identifier" => "MT-HTTP",
-                 "trace_id" => "trace-http-001",
-                 "state" => "In Progress",
-                 "session_id" => "thread-http",
-                 "runtime_name" => "claude-reviewer",
-                 "turn_count" => 7,
-                 "last_event" => "notification",
-                 "last_message" => "rendered",
-                 "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
-                 "last_event_at" => nil,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
-               }
-             ],
-             "retrying" => [
-               %{
-                 "issue_id" => "issue-retry",
-                 "issue_identifier" => "MT-RETRY",
-                 "attempt" => 2,
-                 "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
-                 "error" => "boom",
-                 "error_class" => "transient"
-               }
-             ],
-             "codex_totals" => %{
-               "input_tokens" => 4,
-               "output_tokens" => 8,
-               "total_tokens" => 12,
-               "seconds_running" => 42.5
-             },
-             "rate_limits" => %{"primary" => %{"remaining" => 11}},
-             "stats" => %{
-               "completed_count" => 3,
-               "failed_count" => 1,
-               "success_rate" => 0.75,
-               "duration_ms" => %{
-                 "sample_count" => 3,
-                 "p50" => 2_200,
-                 "p95" => 5_400,
-                 "p99" => 5_400
-               },
-               "per_turn_tokens" => [
-                 %{
-                   "issue_id" => "issue-http",
-                   "issue_identifier" => "MT-HTTP",
-                   "session_id" => "thread-http",
-                   "turn_count" => 7,
-                   "input_tokens" => 2,
-                   "output_tokens" => 3,
-                   "total_tokens" => 5,
-                   "recorded_at" => state_payload["stats"]["per_turn_tokens"] |> List.first() |> Map.fetch!("recorded_at")
-                 }
-               ],
-               "linear_api_response_time_ms" => %{
-                 "sample_count" => 2,
-                 "p50" => 120,
-                 "p95" => 300
-               }
-             },
-             "workspace" => %{
-               "usage_bytes" => 2_147_483_648,
-               "warning_threshold_bytes" => 10_737_418_240,
-               "done_closed_keep_count" => 5
-             }
+    assert is_binary(state_payload["generated_at"])
+    assert is_list(state_payload["completed"])
+    assert state_payload["counts"] == %{
+             "running" => 1,
+             "retrying" => 1,
+             "checkpoint_human_verify" => 3,
+             "checkpoint_decision" => 1,
+             "checkpoint_human_action" => 2
+           }
+    assert state_payload["checkpoint_waiting"] == %{
+             "human_verify" => 3,
+             "decision" => 1,
+             "human_action" => 2
+           }
+
+    assert [running_payload] = state_payload["running"]
+    assert running_payload["issue_id"] == "issue-http"
+    assert running_payload["issue_identifier"] == "MT-HTTP"
+    assert running_payload["trace_id"] == "trace-http-001"
+    assert running_payload["state"] == "In Progress"
+    assert running_payload["session_id"] == "thread-http"
+    assert running_payload["runtime_name"] == "claude-reviewer"
+    assert running_payload["turn_count"] == 7
+    assert running_payload["last_event"] == "notification"
+    assert running_payload["last_message"] == "rendered"
+    assert is_binary(running_payload["started_at"])
+    assert running_payload["last_event_at"] == nil
+    assert running_payload["tokens"] == %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+    assert running_payload["workflow"]["current_state"] == "In Progress"
+    assert is_list(running_payload["workflow"]["stages"])
+
+    assert [retrying_payload] = state_payload["retrying"]
+    assert retrying_payload["issue_id"] == "issue-retry"
+    assert retrying_payload["issue_identifier"] == "MT-RETRY"
+    assert retrying_payload["attempt"] == 2
+    assert is_binary(retrying_payload["due_at"])
+    assert retrying_payload["error"] == "boom"
+    assert retrying_payload["error_class"] == "transient"
+
+    assert state_payload["codex_totals"] == %{
+             "input_tokens" => 4,
+             "output_tokens" => 8,
+             "total_tokens" => 12,
+             "seconds_running" => 42.5
+           }
+    assert state_payload["rate_limits"] == %{"primary" => %{"remaining" => 11}}
+    assert state_payload["stats"]["completed_count"] == 3
+    assert state_payload["stats"]["failed_count"] == 1
+    assert state_payload["stats"]["success_rate"] == 0.75
+    assert state_payload["stats"]["duration_ms"] == %{"sample_count" => 3, "p50" => 2_200, "p95" => 5_400, "p99" => 5_400}
+    assert state_payload["stats"]["linear_api_response_time_ms"] == %{"sample_count" => 2, "p50" => 120, "p95" => 300}
+    assert [%{"issue_identifier" => "MT-HTTP", "turn_count" => 7}] = state_payload["stats"]["per_turn_tokens"]
+    assert state_payload["workspace"] == %{
+             "usage_bytes" => 2_147_483_648,
+             "warning_threshold_bytes" => 10_737_418_240,
+             "done_closed_keep_count" => 5
            }
 
     stats_payload = json_response(get(build_conn(), "/api/v1/stats"), 200)
@@ -457,29 +433,30 @@ defmodule SymphonyElixir.ExtensionsTest do
     conn = get(build_conn(), "/api/v1/MT-HTTP")
     issue_payload = json_response(conn, 200)
 
-    assert issue_payload == %{
-             "issue_identifier" => "MT-HTTP",
-             "issue_id" => "issue-http",
-             "status" => "running",
-             "workspace" => %{"path" => Path.join(Config.settings!().workspace.root, "MT-HTTP")},
-             "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
-             "running" => %{
-               "trace_id" => "trace-http-001",
-               "session_id" => "thread-http",
-               "runtime_name" => "claude-reviewer",
-               "turn_count" => 7,
-               "state" => "In Progress",
-               "started_at" => issue_payload["running"]["started_at"],
-               "last_event" => "notification",
-               "last_message" => "rendered",
-               "last_event_at" => nil,
-               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
-             },
-             "retry" => nil,
-             "logs" => %{"codex_session_logs" => []},
-             "recent_events" => [],
-             "last_error" => nil,
-             "tracked" => %{}
+    assert issue_payload["issue_identifier"] == "MT-HTTP"
+    assert issue_payload["issue_id"] == "issue-http"
+    assert issue_payload["status"] == "running"
+    assert issue_payload["workspace"] == %{"path" => Path.join(Config.settings!().workspace.root, "MT-HTTP")}
+    assert issue_payload["attempts"] == %{"restart_count" => 0, "current_retry_attempt" => 0}
+    assert issue_payload["retry"] == nil
+    assert issue_payload["logs"] == %{"codex_session_logs" => []}
+    assert issue_payload["recent_events"] == []
+    assert issue_payload["last_error"] == nil
+    assert issue_payload["tracked"] == %{}
+    assert issue_payload["workflow"]["current_state"] == "In Progress"
+
+    assert issue_payload["running"] == %{
+             "trace_id" => "trace-http-001",
+             "session_id" => "thread-http",
+             "runtime_name" => "claude-reviewer",
+             "turn_count" => 7,
+             "state" => "In Progress",
+             "started_at" => issue_payload["running"]["started_at"],
+             "last_event" => "notification",
+             "last_message" => "rendered",
+             "last_event_at" => nil,
+             "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
+             "workflow" => issue_payload["running"]["workflow"]
            }
 
     conn = get(build_conn(), "/api/v1/MT-RETRY")
@@ -557,6 +534,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   test "phoenix observability api v2 endpoints: completed, activity, tokens, intervene" do
     orchestrator_name = Module.concat(__MODULE__, :ApiV2Orchestrator)
+    completed_issue_identifier = "MT-DONE-#{System.unique_integer([:positive])}"
+    finished_at = DateTime.utc_now() |> DateTime.truncate(:second)
+    started_at = DateTime.add(finished_at, -90, :second)
 
     {:ok, _pid} =
       StaticOrchestrator.start_link(
@@ -567,10 +547,28 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    # GET /api/v1/issues/completed — stub returns empty list
+    SymphonyElixir.CompletionReportStore.store(%{
+      issue_id: "issue-done",
+      issue_identifier: completed_issue_identifier,
+      runtime_name: "codex",
+      result: :done,
+      started_at: started_at,
+      finished_at: finished_at,
+      duration_ms: 90_000,
+      turns: 3,
+      tokens: %{input: 11, output: 22, total: 33},
+      tokens_per_turn: 11.0,
+      error: nil
+    })
+
     completed = json_response(get(build_conn(), "/api/v1/issues/completed"), 200)
-    assert completed["items"] == []
     assert is_binary(completed["generated_at"])
+
+    assert Enum.any?(completed["items"], fn item ->
+             item["issue_identifier"] == completed_issue_identifier and
+               item["result"] == "done" and
+               item["duration_ms"] == 90_000
+           end)
 
     # GET /api/v1/issues/:id/activity — stub returns empty activity
     activity = json_response(get(build_conn(), "/api/v1/issues/MT-HTTP/activity"), 200)
@@ -687,6 +685,25 @@ defmodule SymphonyElixir.ExtensionsTest do
   test "dashboard liveview renders and refreshes over pubsub" do
     orchestrator_name = Module.concat(__MODULE__, :DashboardOrchestrator)
     snapshot = static_snapshot()
+    completed_issue_identifier = "MT-COMPLETE-#{System.unique_integer([:positive])}"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_workflow_stages: ["Todo", "In Progress", "Human Review", "Done"]
+    )
+
+    SymphonyElixir.CompletionReportStore.store(%{
+      issue_id: "issue-complete",
+      issue_identifier: completed_issue_identifier,
+      runtime_name: "codex",
+      result: :done,
+      started_at: DateTime.utc_now() |> DateTime.add(-120, :second),
+      finished_at: DateTime.utc_now(),
+      duration_ms: 120_000,
+      turns: 4,
+      tokens: %{input: 50, output: 70, total: 120},
+      tokens_per_turn: 30.0,
+      error: nil
+    })
 
     {:ok, orchestrator_pid} =
       StaticOrchestrator.start_link(
@@ -716,9 +733,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Checkpoint · Human action"
     assert html =~ "Copy ID"
     assert html =~ "Codex update"
+    assert html =~ "Workflow stage"
+    assert html =~ "Human Review"
+    assert html =~ "Done"
     assert html =~ "claude-reviewer"
     assert html =~ "Completed"
     assert html =~ "Failed"
+    assert html =~ "Completed issues"
+    assert html =~ completed_issue_identifier
     assert html =~ "Success rate"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
@@ -775,6 +797,11 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   test "issue detail liveview renders running issue with tokens and intervene form" do
     orchestrator_name = Module.concat(__MODULE__, :DetailOrchestrator)
+    directive = "stop and use middleware #{System.unique_integer([:positive])}"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_workflow_stages: ["Todo", "In Progress", "Human Review", "Done"]
+    )
 
     {:ok, _pid} =
       StaticOrchestrator.start_link(
@@ -789,6 +816,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert html =~ "MT-HTTP"
     assert html =~ "← Operations Dashboard"
+    assert html =~ "Workflow Progress"
+    assert html =~ "●Todo -&gt; ●In Progress -&gt; ○Human Review -&gt; ○Done"
     assert html =~ "Intervene"
     assert html =~ "Activity timeline"
     assert html =~ "Queue directive"
@@ -805,11 +834,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert render(view) =~ "Directive cannot be empty"
 
     # Intervene: valid directive shows success flash
+    SymphonyElixir.Intervention.clear("issue-http")
+
     view
     |> element("form[phx-submit=intervene]")
-    |> render_submit(%{directive: "stop and use middleware"})
+    |> render_submit(%{directive: directive})
 
     assert render(view) =~ "Directive queued"
+    assert SymphonyElixir.Intervention.dequeue("issue-http") == directive
   end
 
   test "issue detail liveview renders not-found state for inactive issue" do
@@ -910,6 +942,82 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert method_not_allowed_response.body["error"]["code"] == "method_not_allowed"
 
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
+  end
+
+  test "CLI status, logs, and intervene subcommands hit the live HTTP server" do
+    issue_identifier = "MT-CLI-#{System.unique_integer([:positive])}"
+    issue_id = "issue-cli-#{System.unique_integer([:positive])}"
+
+    snapshot =
+      static_snapshot()
+      |> Map.update!(:running, fn [entry] ->
+        [%{entry | identifier: issue_identifier, issue_id: issue_id}]
+      end)
+      |> Map.update!(:stats, fn stats ->
+        Map.update!(stats, :per_turn_tokens, fn [turn] ->
+          [%{turn | issue_id: issue_id, issue_identifier: issue_identifier}]
+        end)
+      end)
+
+    orchestrator_name = Module.concat(__MODULE__, :CliHttpOrchestrator)
+
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: snapshot, refresh: %{}})
+    start_supervised!({HttpServer, host: "127.0.0.1", port: 0, orchestrator: orchestrator_name, snapshot_timeout_ms: 50})
+
+    port = wait_for_bound_port()
+    directive = "switch plan #{System.unique_integer([:positive])}"
+
+    SymphonyElixir.ActivityLog.append(issue_identifier, %{
+      timestamp: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+      event: "tool_called",
+      turn: 7,
+      detail: "mix test",
+      tokens: %{input: 1, output: 2}
+    })
+
+    SymphonyElixir.CompletionReportStore.store(%{
+      issue_id: issue_id,
+      issue_identifier: issue_identifier,
+      runtime_name: "codex",
+      result: :done,
+      started_at: DateTime.utc_now() |> DateTime.add(-30, :second),
+      finished_at: DateTime.utc_now(),
+      duration_ms: 30_000,
+      turns: 3,
+      tokens: %{input: 10, output: 20, total: 30},
+      tokens_per_turn: 10.0,
+      error: nil
+    })
+
+    status_output =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert {:ok, :no_wait} = CLI.evaluate(["status", "--port", Integer.to_string(port)])
+      end)
+
+    assert status_output =~ "Symphony status"
+    assert status_output =~ "running: 1"
+
+    logs_output =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert {:ok, :no_wait} =
+                 CLI.evaluate(["logs", "--issue", issue_identifier, "--full", "--port", Integer.to_string(port)])
+      end)
+
+    assert logs_output =~ "Issue activity: #{issue_identifier}"
+    assert logs_output =~ "tool_called"
+    assert logs_output =~ "Completion report:"
+    assert logs_output =~ "result=done"
+
+    SymphonyElixir.Intervention.clear(issue_id)
+
+    intervene_output =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert {:ok, :no_wait} =
+                 CLI.evaluate(["intervene", "--port", Integer.to_string(port), issue_identifier, directive])
+      end)
+
+    assert intervene_output =~ "Directive queued for #{issue_identifier}"
+    assert SymphonyElixir.Intervention.dequeue(issue_id) == directive
   end
 
   defp start_test_endpoint(overrides) do

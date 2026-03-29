@@ -1346,6 +1346,17 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert default_rt.stall_timeout_ms == 60_000
   end
 
+  test "schema parse accepts tracker workflow stages" do
+    assert {:ok, settings} =
+             Schema.parse(%{
+               tracker: %{
+                 workflow_stages: ["Todo", "In Progress", "Human Review", "Done"]
+               }
+             })
+
+    assert settings.tracker.workflow_stages == ["Todo", "In Progress", "Human Review", "Done"]
+  end
+
   test "schema parse supports multi-runtime config with provider-based routing" do
     assert {:ok, settings} =
              Schema.parse(%{

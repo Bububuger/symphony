@@ -5,7 +5,6 @@ defmodule SymphonyElixir.CLITest do
 
   @ack_flag "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
 
-  # Base deps without consent fields (for backward-compat tests that don't need them)
   defp base_deps(parent) do
     %{
       file_regular?: fn _path ->
@@ -150,11 +149,13 @@ defmodule SymphonyElixir.CLITest do
   # ── stub subcommands ──────────────────────────────────────────────────────
 
   test "off subcommand returns :no_wait" do
-    assert {:ok, :no_wait} = CLI.evaluate(["off"], %{})
+    assert {:error, message} = CLI.evaluate(["off"], %{})
+    assert message =~ "No server port configured"
   end
 
   test "status subcommand returns :no_wait" do
-    assert {:ok, :no_wait} = CLI.evaluate(["status"], %{})
+    assert {:error, message} = CLI.evaluate(["status"], %{})
+    assert message =~ "No server port configured"
   end
 
   test "init --demo subcommand returns :no_wait" do
@@ -172,33 +173,28 @@ defmodule SymphonyElixir.CLITest do
     assert result in [:ok, {:ok, :no_wait}] or match?({:error, _}, result)
   end
 
-  test "logs subcommand returns :no_wait with shell redirect message" do
-    assert {:ok, :no_wait} = CLI.evaluate(["logs"], %{})
+  test "logs subcommand requires --issue" do
+    assert {:error, message} = CLI.evaluate(["logs"], %{})
+    assert message =~ "Usage:"
   end
 
-  test "logs subcommand with --issue flag returns :no_wait" do
-    assert {:ok, :no_wait} = CLI.evaluate(["logs", "--issue", "BUB-123"], %{})
+  test "logs subcommand with --issue and no server returns an error" do
+    assert {:error, message} = CLI.evaluate(["logs", "--issue", "BUB-123"], %{})
+    assert message =~ "No server port configured"
   end
 
-  test "logs subcommand with --full flag returns :no_wait" do
-    assert {:ok, :no_wait} = CLI.evaluate(["logs", "--issue", "BUB-123", "--full"], %{})
+  test "intervene subcommand with no server returns an error" do
+    assert {:error, message} = CLI.evaluate(["intervene", "BUB-123", "use middleware instead"], %{})
+    assert message =~ "No server port configured"
   end
 
-  test "intervene subcommand returns :no_wait with shell redirect message" do
-    assert {:ok, :no_wait} = CLI.evaluate(["intervene", "BUB-123", "use middleware instead"], %{})
-  end
-
-  # ── backward-compat (legacy flag) ─────────────────────────────────────────
-
-  test "returns the guardrails acknowledgement banner when the flag is missing" do
+  test "legacy bare invocation without subcommand returns usage" do
     parent = self()
     deps = base_deps(parent)
 
-    assert {:error, banner} = CLI.evaluate(["WORKFLOW.md"], deps)
-    assert banner =~ "This Symphony implementation is a low key engineering preview."
-    assert banner =~ "Codex will run without any guardrails."
-    assert banner =~ "SymphonyElixir is not a supported product and is presented as-is."
-    assert banner =~ @ack_flag
+    assert {:error, usage} = CLI.evaluate(["WORKFLOW.md"], deps)
+    assert usage =~ "Usage:"
+    assert usage =~ "symphony on [path-to-WORKFLOW.md]"
     refute_received :file_checked
     refute_received :workflow_set
     refute_received :logs_root_set
@@ -206,57 +202,31 @@ defmodule SymphonyElixir.CLITest do
     refute_received :started
   end
 
-  test "defaults to WORKFLOW.md when workflow path is missing" do
-    deps = %{
-      file_regular?: fn path -> Path.basename(path) == "WORKFLOW.md" end,
-      set_workflow_file_path: fn _path -> :ok end,
-      set_logs_root: fn _path -> :ok end,
-      set_server_port_override: fn _port -> :ok end,
-      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
-    }
-
-    assert :ok = CLI.evaluate([@ack_flag], deps)
-  end
-
-  test "uses an explicit workflow path override when provided" do
+  test "on accepts --logs-root and passes an expanded root to runtime deps" do
     parent = self()
-    workflow_path = "tmp/custom/WORKFLOW.md"
-    expanded_path = Path.expand(workflow_path)
 
     deps = %{
       file_regular?: fn path ->
-        send(parent, {:workflow_checked, path})
-        path == expanded_path
+        if path == "/tmp/test-symphony-consent" do
+          true
+        else
+          path == Path.expand("WORKFLOW.md")
+        end
       end,
-      set_workflow_file_path: fn path ->
-        send(parent, {:workflow_set, path})
-        :ok
-      end,
-      set_logs_root: fn _path -> :ok end,
-      set_server_port_override: fn _port -> :ok end,
-      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
-    }
-
-    assert :ok = CLI.evaluate([@ack_flag, workflow_path], deps)
-    assert_received {:workflow_checked, ^expanded_path}
-    assert_received {:workflow_set, ^expanded_path}
-  end
-
-  test "accepts --logs-root and passes an expanded root to runtime deps" do
-    parent = self()
-
-    deps = %{
-      file_regular?: fn _path -> true end,
       set_workflow_file_path: fn _path -> :ok end,
       set_logs_root: fn path ->
         send(parent, {:logs_root, path})
         :ok
       end,
       set_server_port_override: fn _port -> :ok end,
-      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
+      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end,
+      consent_file_path: "/tmp/test-symphony-consent",
+      write_consent: fn _path -> :ok end,
+      ask_for_consent: fn -> false end
     }
 
-    assert :ok = CLI.evaluate([@ack_flag, "--logs-root", "tmp/custom-logs", "WORKFLOW.md"], deps)
+    assert :ok = CLI.evaluate(["on", "--logs-root", "tmp/custom-logs", "WORKFLOW.md"], deps)
+
     assert_received {:logs_root, expanded_path}
     assert expanded_path == Path.expand("tmp/custom-logs")
   end
@@ -267,10 +237,13 @@ defmodule SymphonyElixir.CLITest do
       set_workflow_file_path: fn _path -> :ok end,
       set_logs_root: fn _path -> :ok end,
       set_server_port_override: fn _port -> :ok end,
-      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
+      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end,
+      consent_file_path: "/tmp/test-symphony-consent",
+      write_consent: fn _path -> :ok end,
+      ask_for_consent: fn -> false end
     }
 
-    assert {:error, message} = CLI.evaluate([@ack_flag, "WORKFLOW.md"], deps)
+    assert {:error, message} = CLI.evaluate(["on", @ack_flag, "WORKFLOW.md"], deps)
     assert message =~ "Workflow file not found:"
   end
 
@@ -280,10 +253,13 @@ defmodule SymphonyElixir.CLITest do
       set_workflow_file_path: fn _path -> :ok end,
       set_logs_root: fn _path -> :ok end,
       set_server_port_override: fn _port -> :ok end,
-      ensure_all_started: fn -> {:error, :boom} end
+      ensure_all_started: fn -> {:error, :boom} end,
+      consent_file_path: "/tmp/test-symphony-consent",
+      write_consent: fn _path -> :ok end,
+      ask_for_consent: fn -> false end
     }
 
-    assert {:error, message} = CLI.evaluate([@ack_flag, "WORKFLOW.md"], deps)
+    assert {:error, message} = CLI.evaluate(["on", @ack_flag, "WORKFLOW.md"], deps)
     assert message =~ "Failed to start Symphony with workflow"
     assert message =~ ":boom"
   end
@@ -294,9 +270,12 @@ defmodule SymphonyElixir.CLITest do
       set_workflow_file_path: fn _path -> :ok end,
       set_logs_root: fn _path -> :ok end,
       set_server_port_override: fn _port -> :ok end,
-      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
+      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end,
+      consent_file_path: "/tmp/test-symphony-consent",
+      write_consent: fn _path -> :ok end,
+      ask_for_consent: fn -> false end
     }
 
-    assert :ok = CLI.evaluate([@ack_flag, "WORKFLOW.md"], deps)
+    assert :ok = CLI.evaluate(["on", @ack_flag, "WORKFLOW.md"], deps)
   end
 end

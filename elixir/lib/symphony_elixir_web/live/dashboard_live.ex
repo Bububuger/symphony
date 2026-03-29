@@ -200,6 +200,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <table class="data-table data-table-running">
                 <colgroup>
                   <col style="width: 12rem;" />
+                  <col style="width: 18rem;" />
                   <col style="width: 8rem;" />
                   <col style="width: 7.5rem;" />
                   <col style="width: 8.5rem;" />
@@ -209,6 +210,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <thead>
                   <tr>
                     <th>Issue</th>
+                    <th>Workflow stage</th>
                     <th>State</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
@@ -223,6 +225,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <span class="issue-id"><%= entry.issue_identifier %></span>
                         <a class="issue-link" href={"/dashboard/issues/#{entry.issue_identifier}"}>Details</a>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON</a>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span class="event-text" title={entry.workflow.summary}><%= entry.workflow.summary %></span>
+                        <span class="muted"><%= entry.workflow.current_state || "n/a" %></span>
                       </div>
                     </td>
                     <td>
@@ -273,6 +281,48 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
                       </div>
                     </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Completed issues</h2>
+              <p class="section-copy">Recent completion reports with workflow progression, turns, duration, and total tokens.</p>
+            </div>
+          </div>
+
+          <%= if @payload.completed == [] do %>
+            <p class="empty-state">No completed issues recorded yet.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 860px;">
+                <thead>
+                  <tr>
+                    <th>Issue</th>
+                    <th>Workflow stage</th>
+                    <th>Turns</th>
+                    <th>Duration</th>
+                    <th>Tokens</th>
+                    <th>Result</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={entry <- @payload.completed}>
+                    <td>
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= entry.issue_identifier %></span>
+                      </div>
+                    </td>
+                    <td><span class="event-text" title={entry.workflow.summary}><%= entry.workflow.summary %></span></td>
+                    <td class="numeric"><%= format_int(entry.turns) %></td>
+                    <td class="numeric"><%= format_milliseconds(entry.duration_ms) %></td>
+                    <td class="numeric"><%= format_int(entry.tokens.total_tokens) %></td>
+                    <td><%= result_label(entry.result) %></td>
                   </tr>
                 </tbody>
               </table>
@@ -457,6 +507,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
       true -> base
     end
   end
+
+  defp result_label("done"), do: "✓"
+  defp result_label("failed"), do: "✗"
+  defp result_label(_value), do: "?"
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)

@@ -52,7 +52,11 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   @spec completed_issues(Conn.t(), map()) :: Conn.t()
   def completed_issues(conn, _params) do
     generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-    json(conn, %{items: [], generated_at: generated_at})
+    items =
+      SymphonyElixir.CompletionReportStore.list()
+      |> Enum.map(&completed_issue_item/1)
+
+    json(conn, %{items: items, generated_at: generated_at})
   end
 
   @spec issue_activity(Conn.t(), map()) :: Conn.t()
@@ -194,6 +198,36 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     |> put_status(status)
     |> json(%{error: %{code: code, message: message}})
   end
+
+  defp completed_issue_item(report) when is_map(report) do
+    tokens = Map.get(report, :tokens) || Map.get(report, "tokens") || %{}
+
+    %{
+      issue_id: Map.get(report, :issue_id) || Map.get(report, "issue_id"),
+      issue_identifier: Map.get(report, :issue_identifier) || Map.get(report, "issue_identifier"),
+      runtime_name: Map.get(report, :runtime_name) || Map.get(report, "runtime_name"),
+      result: normalize_report_value(Map.get(report, :result) || Map.get(report, "result")),
+      started_at: iso8601_or_nil(Map.get(report, :started_at) || Map.get(report, "started_at")),
+      finished_at: iso8601_or_nil(Map.get(report, :finished_at) || Map.get(report, "finished_at")),
+      duration_ms: Map.get(report, :duration_ms) || Map.get(report, "duration_ms") || 0,
+      turns: Map.get(report, :turns) || Map.get(report, "turns") || 0,
+      tokens: %{
+        input: Map.get(tokens, :input) || Map.get(tokens, "input") || 0,
+        output: Map.get(tokens, :output) || Map.get(tokens, "output") || 0,
+        total: Map.get(tokens, :total) || Map.get(tokens, "total") || 0
+      },
+      tokens_per_turn:
+        Map.get(report, :tokens_per_turn) || Map.get(report, "tokens_per_turn") || 0,
+      error: Map.get(report, :error) || Map.get(report, "error")
+    }
+  end
+
+  defp normalize_report_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp normalize_report_value(value), do: value
+
+  defp iso8601_or_nil(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp iso8601_or_nil(value) when is_binary(value), do: value
+  defp iso8601_or_nil(_value), do: nil
 
   # Returns the target for all orchestrator calls.
   # - Endpoint config override (non-default): used in tests to inject doubles.

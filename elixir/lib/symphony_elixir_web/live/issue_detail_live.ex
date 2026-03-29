@@ -8,6 +8,7 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.Intervention
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
 
   @max_agent_events 50
@@ -51,11 +52,29 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
   def handle_event("intervene", %{"directive" => directive}, socket) do
     trimmed = String.trim(directive)
 
-    if trimmed == "" do
-      {:noreply, put_flash(socket, :error, "Directive cannot be empty")}
-    else
-      # Stub: BUB-189 will wire this to the Intervention module
-      {:noreply, put_flash(socket, :info, "Directive queued — takes effect after current turn completes")}
+    cond do
+      trimmed == "" ->
+        {:noreply, put_flash(socket, :error, "Directive cannot be empty")}
+
+      true ->
+        case issue_id_for_intervention(socket.assigns.issue) do
+          nil ->
+            {:noreply, put_flash(socket, :error, "Issue is not active")}
+
+          issue_id ->
+            case Intervention.enqueue(issue_id, trimmed) do
+              :ok ->
+                {:noreply,
+                 put_flash(
+                   socket,
+                   :info,
+                   "Directive queued — takes effect after current turn completes"
+                 )}
+
+              {:error, :queue_full} ->
+                {:noreply, put_flash(socket, :error, "Directive queue is full")}
+            end
+        end
     end
   end
 
@@ -97,6 +116,15 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
           <p class="error-copy"><%= @identifier %> is not currently running or retrying.</p>
         </section>
       <% else %>
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Workflow Progress</h2>
+              <p class="section-copy"><%= @issue.workflow.summary %></p>
+            </div>
+          </div>
+        </section>
+
         <%= if @issue[:running] do %>
           <section class="section-card">
             <div class="section-header">
@@ -254,6 +282,11 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
   defp snapshot_timeout_ms do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
   end
+
+  defp issue_id_for_intervention(%{issue_id: issue_id}) when is_binary(issue_id) and issue_id != "",
+    do: issue_id
+
+  defp issue_id_for_intervention(_issue), do: nil
 
   defp event_badge_class(event) do
     base = "state-badge"
