@@ -273,6 +273,7 @@ defmodule SymphonyElixir.Orchestrator do
           |> record_turn_token_usage(issue_id, updated_running_entry, update)
 
         append_activity_event(issue_id, updated_running_entry, update)
+        broadcast_agent_event(issue_id, updated_running_entry, update)
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
     end
@@ -3072,5 +3073,54 @@ defmodule SymphonyElixir.Orchestrator do
       detail: detail,
       tokens: %{input: input_tokens, output: output_tokens}
     }
+  end
+
+  # ---------------------------------------------------------------------------
+  # PubSub broadcast helpers
+  # ---------------------------------------------------------------------------
+
+  defp broadcast_agent_event(issue_id, running_entry, update) do
+    pubsub = SymphonyElixir.PubSub
+
+    case Process.whereis(pubsub) do
+      pid when is_pid(pid) ->
+        event_type = map_event_type(update[:event])
+        detail = build_event_detail(update)
+        turn = Map.get(running_entry, :turn_count, 0)
+
+        tokens = %{
+          input: Map.get(running_entry, :codex_input_tokens, 0),
+          output: Map.get(running_entry, :codex_output_tokens, 0)
+        }
+
+        payload = %{
+          event: event_type,
+          turn: turn,
+          detail: String.slice(detail, 0, 500),
+          tokens: tokens,
+          timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
+        }
+
+        Phoenix.PubSub.broadcast(pubsub, "agent:#{issue_id}", {:agent_event, payload})
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp map_event_type(:session_started), do: "turn_started"
+  defp map_event_type(:tool_call), do: "tool_called"
+  defp map_event_type(:tool_result), do: "tool_called"
+  defp map_event_type(:assistant_message), do: "text_output"
+  defp map_event_type(:session_stopped), do: "turn_completed"
+  defp map_event_type(other), do: to_string(other)
+
+  defp build_event_detail(update) do
+    cond do
+      is_binary(update[:payload]) -> update[:payload]
+      is_binary(update[:raw]) -> update[:raw]
+      is_map(update[:payload]) -> inspect(update[:payload])
+      true -> to_string(update[:event])
+    end
   end
 end

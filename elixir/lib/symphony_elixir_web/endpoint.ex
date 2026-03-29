@@ -16,6 +16,11 @@ defmodule SymphonyElixirWeb.Endpoint do
     longpoll: false
   )
 
+  socket("/ws", SymphonyElixirWeb.UserSocket,
+    websocket: true,
+    longpoll: false
+  )
+
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
 
