@@ -48,6 +48,12 @@ defmodule SymphonyElixir.Intervention do
     GenServer.call(__MODULE__, {:list, issue_id})
   end
 
+  @doc "Remove all pending directives for *issue_id* (called on issue termination)."
+  @spec clear(String.t()) :: :ok
+  def clear(issue_id) when is_binary(issue_id) do
+    GenServer.cast(__MODULE__, {:clear, issue_id})
+  end
+
   # ---------------------------------------------------------------------------
   # GenServer callbacks
   # ---------------------------------------------------------------------------
@@ -91,5 +97,9 @@ defmodule SymphonyElixir.Intervention do
   def handle_call({:list, issue_id}, _from, queues) do
     queue = Map.get(queues, issue_id, :queue.new())
     {:reply, :queue.to_list(queue), queues}
+  end
+
+  def handle_cast({:clear, issue_id}, queues) do
+    {:noreply, Map.delete(queues, issue_id)}
   end
 end

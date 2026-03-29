@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{ActivityLog, AgentRunner, Config, ErrorClassifier, RateLimitCircuitBreaker, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{ActivityLog, AgentRunner, Config, ErrorClassifier, Intervention, RateLimitCircuitBreaker, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_base_delay_ms 5_000
@@ -193,7 +193,7 @@ defmodule SymphonyElixir.Orchestrator do
                     identifier = running_entry.identifier
                     cleanup_issue_workspace(identifier)
                     store_completion_report(running_entry, :success, nil)
-                    ActivityLog.complete(issue_id, build_outcome_event(running_entry, "issue_completed", nil))
+                    ActivityLog.complete(identifier, build_outcome_event(running_entry, "issue_completed", nil))
 
                     state
                     |> complete_issue(issue_id)
@@ -232,7 +232,8 @@ defmodule SymphonyElixir.Orchestrator do
 
                   if not ErrorClassifier.retry_allowed?(error_class, failure_attempt) do
                     store_completion_report(running_entry, :failure, inspect(reason))
-                    ActivityLog.complete(issue_id, build_outcome_event(running_entry, "issue_failed", inspect(reason)))
+                    identifier = running_entry[:identifier] || issue_id
+                    ActivityLog.complete(identifier, build_outcome_event(running_entry, "issue_failed", inspect(reason)))
                   end
 
                   handle_worker_failure(
@@ -272,8 +273,9 @@ defmodule SymphonyElixir.Orchestrator do
           |> apply_codex_rate_limits(update)
           |> record_turn_token_usage(issue_id, updated_running_entry, update)
 
-        append_activity_event(issue_id, updated_running_entry, update)
-        broadcast_agent_event(issue_id, updated_running_entry, update)
+        identifier = Map.get(updated_running_entry, :identifier, issue_id)
+        append_activity_event(identifier, updated_running_entry, update)
+        broadcast_agent_event(identifier, updated_running_entry, update)
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
     end
@@ -669,6 +671,9 @@ defmodule SymphonyElixir.Orchestrator do
         if is_reference(ref) do
           Process.demonitor(ref, [:flush])
         end
+
+        ActivityLog.complete(identifier, build_outcome_event(running_entry, "issue_terminated", nil))
+        Intervention.clear(issue_id)
 
         %{
           state
