@@ -27,17 +27,37 @@ defmodule SymphonyElixir.Application do
   def start(_type, _args) do
     :ok = SymphonyElixir.LogFile.configure()
 
-    children = [
-      {Phoenix.PubSub, name: SymphonyElixir.PubSub},
-      {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
-      SymphonyElixir.WorkflowStore,
-      SymphonyElixir.ActivityLog,
-      SymphonyElixir.CompletionReportStore,
-      SymphonyElixir.Intervention,
-      SymphonyElixir.CoordinatorStarter,
-      SymphonyElixir.HttpServer,
-      SymphonyElixir.StatusDashboard
-    ]
+    topologies = Application.get_env(:libcluster, :topologies, [])
+
+    children =
+      # Cluster discovery: only add when topologies are configured (skipped in tests/dev).
+      (if topologies != [] do
+         [{Cluster.Supervisor, [topologies, [name: SymphonyElixir.ClusterSupervisor]]}]
+       else
+         []
+       end) ++
+        [
+          {Phoenix.PubSub, name: SymphonyElixir.PubSub},
+          {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
+          # Distributed executor pool — works on single-node too (Horde is transparent).
+          {Horde.DynamicSupervisor,
+           name: SymphonyElixir.ExecutorPool,
+           strategy: :one_for_one,
+           distribution_strategy: Horde.UniformDistribution,
+           members: :auto},
+          # Distributed registry for cluster-wide issue claim deduplication.
+          {Horde.Registry,
+           name: SymphonyElixir.IssueRegistry,
+           keys: :unique,
+           members: :auto},
+          SymphonyElixir.WorkflowStore,
+          SymphonyElixir.ActivityLog,
+          SymphonyElixir.CompletionReportStore,
+          SymphonyElixir.Intervention,
+          SymphonyElixir.CoordinatorStarter,
+          SymphonyElixir.HttpServer,
+          SymphonyElixir.StatusDashboard
+        ]
 
     result =
       Supervisor.start_link(
