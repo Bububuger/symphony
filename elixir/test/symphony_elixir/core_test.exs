@@ -224,28 +224,33 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, :workflow_front_matter_not_a_map} = Workflow.load(workflow_path)
   end
 
-  test "SymphonyElixir.start_link delegates to the orchestrator" do
+  test "SymphonyElixir.start_link starts leader election and orchestrator" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
-    orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
 
+    # CoordinatorStarter is now the supervisor child that owns Orchestrator.
+    # Terminate it (which also exits the linked Orchestrator).
     on_exit(fn ->
-      if is_nil(Process.whereis(SymphonyElixir.Orchestrator)) do
-        case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator) do
+      if is_nil(Process.whereis(SymphonyElixir.CoordinatorStarter)) do
+        case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.CoordinatorStarter) do
           {:ok, _pid} -> :ok
           {:error, {:already_started, _pid}} -> :ok
+          _ -> :ok
         end
       end
     end)
 
-    if is_pid(orchestrator_pid) do
-      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
-    end
+    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.CoordinatorStarter)
+    # Wait until both CoordinatorStarter and Orchestrator are unregistered.
+    Enum.each(1..50, fn _ ->
+      if Process.whereis(SymphonyElixir.Orchestrator) != nil, do: :timer.sleep(10)
+    end)
 
-    assert {:ok, pid} = SymphonyElixir.start_link()
-    assert Process.whereis(SymphonyElixir.Orchestrator) == pid
+    # start_link now delegates to CoordinatorStarter (P2 fix: leader-election path).
+    assert {:ok, _coordinator_pid} = SymphonyElixir.start_link()
+    assert is_pid(Process.whereis(SymphonyElixir.Orchestrator)), "Orchestrator must be running"
 
-    GenServer.stop(pid)
+    GenServer.stop(Process.whereis(SymphonyElixir.CoordinatorStarter))
   end
 
   test "linear issue state reconciliation fetch with no running issues is a no-op" do

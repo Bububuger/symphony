@@ -4,11 +4,15 @@ defmodule SymphonyElixir do
   """
 
   @doc """
-  Start the orchestrator in the current BEAM node.
+  Start the orchestrator in the current BEAM node via the leader-election wrapper.
+
+  In a cluster, only the first caller wins the `:global` election and runs the
+  Orchestrator; subsequent nodes become followers. On a single node this behaves
+  identically to starting `SymphonyElixir.Orchestrator` directly.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    SymphonyElixir.Orchestrator.start_link(opts)
+    SymphonyElixir.CoordinatorStarter.start_link(opts)
   end
 end
 
@@ -30,7 +34,7 @@ defmodule SymphonyElixir.Application do
       SymphonyElixir.ActivityLog,
       SymphonyElixir.CompletionReportStore,
       SymphonyElixir.Intervention,
-      SymphonyElixir.Orchestrator,
+      SymphonyElixir.CoordinatorStarter,
       SymphonyElixir.HttpServer,
       SymphonyElixir.StatusDashboard
     ]

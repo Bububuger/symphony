@@ -160,14 +160,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
-  defp resolve_orchestrator_pid do
-    case :global.whereis_name(:symphony_coordinator) do
-      :undefined ->
-        name = orchestrator()
-        if is_atom(name), do: Process.whereis(name), else: name
-      pid -> pid
-    end
-  end
+  defp resolve_orchestrator_pid, do: orchestrator()
 
   @spec shutdown(Conn.t(), map()) :: Conn.t()
   def shutdown(conn, params) do
@@ -202,8 +195,30 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     |> json(%{error: %{code: code, message: message}})
   end
 
+  # Returns the target for all orchestrator calls.
+  # - Endpoint config override (non-default): used in tests to inject doubles.
+  # - Default: resolve global coordinator name for multi-node support.
   defp orchestrator do
-    Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
+    case Endpoint.config(:orchestrator) do
+      nil ->
+        do_global_orchestrator()
+
+      SymphonyElixir.Orchestrator ->
+        do_global_orchestrator()
+
+      name when is_atom(name) ->
+        Process.whereis(name)
+
+      other ->
+        other
+    end
+  end
+
+  defp do_global_orchestrator do
+    case :global.whereis_name(:symphony_coordinator) do
+      :undefined -> SymphonyElixir.Orchestrator
+      pid -> pid
+    end
   end
 
   defp snapshot_timeout_ms do
