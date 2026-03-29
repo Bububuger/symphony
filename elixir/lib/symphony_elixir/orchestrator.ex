@@ -1996,6 +1996,26 @@ defmodule SymphonyElixir.Orchestrator do
      }, state}
   end
 
+  def handle_call({:initiate_shutdown, timeout_ms}, _from, state) do
+    running_pids =
+      state.running
+      |> Map.values()
+      |> Enum.map(fn entry -> Map.get(entry, :pid) end)
+      |> Enum.reject(&is_nil/1)
+
+    wait_ms = min(timeout_ms, 60_000)
+    deadline_ms = System.monotonic_time(:millisecond) + wait_ms
+
+    if running_pids == [] do
+      Logger.info("Graceful shutdown: no running agents, stopping immediately")
+    else
+      Logger.info("Graceful shutdown: waiting up to #{wait_ms}ms for #{length(running_pids)} agent(s) to finish")
+      wait_for_running_pids(running_pids, deadline_ms)
+    end
+
+    {:reply, :ok, state}
+  end
+
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)
     codex_input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
@@ -2817,4 +2837,46 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp integer_like(_value), do: nil
+
+  # ── Public API ─────────────────────────────────────────────────────────────
+
+  @doc """
+  Initiates a graceful shutdown sequence: waits up to `timeout_ms` (capped at 60s)
+  for running agents to finish their current turn, then returns :ok.
+  The caller is responsible for invoking `:init.stop/0` afterwards.
+  """
+  @spec initiate_shutdown(GenServer.server(), non_neg_integer()) :: :ok
+  def initiate_shutdown(server \\ __MODULE__, timeout_ms \\ 30_000) do
+    if Process.whereis(server) do
+      try do
+        GenServer.call(server, {:initiate_shutdown, timeout_ms}, min(timeout_ms, 60_000) + 5_000)
+      catch
+        :exit, _ -> :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  # ── Private helpers ─────────────────────────────────────────────────────────
+
+  defp wait_for_running_pids([], _deadline_ms), do: :ok
+
+  defp wait_for_running_pids(pids, deadline_ms) do
+    remaining_ms = deadline_ms - System.monotonic_time(:millisecond)
+
+    if remaining_ms <= 0 do
+      Logger.warning("Graceful shutdown: timeout reached, #{length(pids)} agent(s) still running")
+      :ok
+    else
+      still_alive = Enum.filter(pids, &Process.alive?/1)
+
+      if still_alive == [] do
+        :ok
+      else
+        Process.sleep(min(500, remaining_ms))
+        wait_for_running_pids(still_alive, deadline_ms)
+      end
+    end
+  end
 end

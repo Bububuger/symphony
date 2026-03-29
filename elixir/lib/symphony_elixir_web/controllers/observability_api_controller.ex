@@ -80,6 +80,23 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec shutdown(Conn.t(), map()) :: Conn.t()
+  def shutdown(conn, params) do
+    timeout_ms = case Map.get(params, "timeout_ms") do
+      v when is_integer(v) and v > 0 -> v
+      _ -> 30_000
+    end
+
+    spawn(fn ->
+      SymphonyElixir.Orchestrator.initiate_shutdown(orchestrator(), timeout_ms)
+      :init.stop()
+    end)
+
+    conn
+    |> put_status(202)
+    |> json(%{status: "shutting_down", message: "Graceful shutdown initiated"})
+  end
+
   @spec method_not_allowed(Conn.t(), map()) :: Conn.t()
   def method_not_allowed(conn, _params) do
     error_response(conn, 405, "method_not_allowed", "Method not allowed")
