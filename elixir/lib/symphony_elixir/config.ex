@@ -131,7 +131,8 @@ defmodule SymphonyElixir.Config do
 
       settings.tracker.kind == "linear" and
           not is_binary(settings.tracker.team_key) and
-          not is_binary(settings.tracker.project_slug) ->
+          not is_binary(settings.tracker.project_slug) and
+          (not is_list(settings.tracker.project_slugs) or settings.tracker.project_slugs == []) ->
         {:error, :missing_linear_team_or_project}
 
       settings.tracker.kind == "plane" and not is_binary(settings.tracker.api_key) ->

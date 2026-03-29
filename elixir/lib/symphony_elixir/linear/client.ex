@@ -163,13 +163,16 @@ defmodule SymphonyElixir.Linear.Client do
           do_fetch_by_team(tracker.team_key, tracker.active_states, assignee_filter)
         end
 
-      is_binary(tracker.project_slug) ->
-        with {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_by_states(tracker.project_slug, tracker.active_states, assignee_filter)
-        end
-
       true ->
-        {:error, :missing_linear_team_or_project}
+        slugs = get_project_slugs(tracker)
+
+        if slugs == [] do
+          {:error, :missing_linear_team_or_project}
+        else
+          with {:ok, assignee_filter} <- routing_assignee_filter() do
+            fetch_issues_for_slugs(slugs, tracker.active_states, assignee_filter)
+          end
+        end
     end
   end
 
@@ -189,11 +192,14 @@ defmodule SymphonyElixir.Linear.Client do
         is_binary(tracker.team_key) ->
           do_fetch_by_team(tracker.team_key, normalized_states, nil)
 
-        is_binary(tracker.project_slug) ->
-          do_fetch_by_states(tracker.project_slug, normalized_states, nil)
-
         true ->
-          {:error, :missing_linear_team_or_project}
+          slugs = get_project_slugs(tracker)
+
+          if slugs == [] do
+            {:error, :missing_linear_team_or_project}
+          else
+            fetch_issues_for_slugs(slugs, normalized_states, nil)
+          end
       end
     end
   end
@@ -296,6 +302,43 @@ defmodule SymphonyElixir.Linear.Client do
 
       ids ->
         do_fetch_issue_states(ids, nil, graphql_fun)
+    end
+  end
+
+  defp get_project_slugs(tracker) do
+    cond do
+      is_list(tracker.project_slugs) and tracker.project_slugs != [] ->
+        tracker.project_slugs
+
+      is_binary(tracker.project_slug) and tracker.project_slug != "" ->
+        [tracker.project_slug]
+
+      true ->
+        []
+    end
+  end
+
+  defp fetch_issues_for_slugs(slugs, state_names, assignee_filter) when is_list(slugs) do
+    {issues, errors} =
+      Enum.reduce(slugs, {[], []}, fn slug, {acc_issues, acc_errors} ->
+        case do_fetch_by_states(slug, state_names, assignee_filter) do
+          {:ok, issues} -> {acc_issues ++ issues, acc_errors}
+          {:error, reason} -> {acc_issues, [{slug, reason} | acc_errors]}
+        end
+      end)
+
+    if errors != [] do
+      Enum.each(errors, fn {slug, reason} ->
+        Logger.warning("Failed to fetch issues for project slug #{inspect(slug)}: #{inspect(reason)}")
+      end)
+    end
+
+    if issues == [] and errors != [] do
+      {_slug, first_error} = hd(Enum.reverse(errors))
+      {:error, first_error}
+    else
+      deduplicated = Enum.uniq_by(issues, fn %Issue{id: id} -> id end)
+      {:ok, deduplicated}
     end
   end
 
