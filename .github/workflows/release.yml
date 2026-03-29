@@ -1,0 +1,78 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-arm64
+            runner: macos-latest
+            # macos-latest on GitHub Actions is ARM (M-series)
+          - target: macos-x86_64
+            runner: macos-13
+            # macos-13 is the last Intel-based macOS runner
+          - target: linux-x86_64
+            runner: ubuntu-22.04
+          - target: linux-arm64
+            runner: ubuntu-22.04-arm
+
+    defaults:
+      run:
+        working-directory: elixir
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up mise tools
+        uses: jdx/mise-action@v3
+        with:
+          install: true
+          cache: true
+          working_directory: elixir
+
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            elixir/deps
+            elixir/_build
+          key: ${{ runner.os }}-${{ runner.arch }}-mix-release-${{ hashFiles('elixir/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-mix-release-
+            ${{ runner.os }}-${{ runner.arch }}-mix-
+
+      - name: Install deps
+        run: mix deps.get --only prod
+
+      - name: Build release tarball
+        env:
+          MIX_ENV: prod
+        run: mix release symphony
+
+      - name: Rename tarball with platform target
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          TARBALL="_build/prod/symphony-${VERSION}.tar.gz"
+          DEST="symphony-${VERSION}-${{ matrix.target }}.tar.gz"
+          mv "$TARBALL" "$DEST"
+          echo "TARBALL_PATH=$DEST" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+        working-directory: elixir
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: elixir/${{ env.TARBALL_PATH }}
+          generate_release_notes: true

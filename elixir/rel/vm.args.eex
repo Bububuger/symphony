@@ -1,0 +1,24 @@
+## Erlang VM arguments for Symphony release
+
+## Set a limit on the number of simultaneously existing processes and ports
++P 1048576
++Q 65536
+
+## Heartbeat management; auto-restarts VM if it dies or becomes unresponsive
+## (Disabled by default; enable if needed)
+##-heart
+
+## Enable SMP (Symmetric Multi-Processing)
+-smp auto
+
+## Increase number of concurrent ports/sockets
+-env ERL_MAX_PORTS 65536
+
+## Set the distribution protocol
+-proto_dist inet_tcp
+
+## Increase the default stack size
++hms 65536
+
+## Crash dump settings
+-env ERL_CRASH_DUMP_SECONDS 5

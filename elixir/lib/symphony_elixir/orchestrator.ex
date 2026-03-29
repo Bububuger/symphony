@@ -45,6 +45,7 @@ defmodule SymphonyElixir.Orchestrator do
       :max_concurrent_agents,
       :next_poll_due_at_ms,
       :poll_check_in_progress,
+      shutdown_in_progress?: false,
       :tick_timer_ref,
       :tick_token,
       :workspace_usage_bytes,
@@ -87,6 +88,7 @@ defmodule SymphonyElixir.Orchestrator do
       max_concurrent_agents: config.agent.max_concurrent_agents,
       next_poll_due_at_ms: now_ms,
       poll_check_in_progress: false,
+      shutdown_in_progress?: false,
       tick_timer_ref: nil,
       tick_token: nil,
       workspace_usage_bytes: 0,
@@ -110,6 +112,9 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
+  def handle_info({:tick, _tick_token}, %State{shutdown_in_progress?: true} = state),
+    do: {:noreply, state}
+
   def handle_info({:tick, tick_token}, %{tick_token: tick_token} = state)
       when is_reference(tick_token) do
     state = refresh_runtime_config(state)
@@ -129,6 +134,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:tick, _tick_token}, state), do: {:noreply, state}
 
+  def handle_info(:tick, %State{shutdown_in_progress?: true} = state), do: {:noreply, state}
+
   def handle_info(:tick, state) do
     state = refresh_runtime_config(state)
 
@@ -143,6 +150,11 @@ defmodule SymphonyElixir.Orchestrator do
     notify_dashboard()
     :ok = schedule_poll_cycle_start()
     {:noreply, state}
+  end
+
+  def handle_info(:run_poll_cycle, %State{shutdown_in_progress?: true} = state) do
+    notify_dashboard()
+    {:noreply, %{state | poll_check_in_progress: false}}
   end
 
   def handle_info(:run_poll_cycle, state) do
@@ -313,6 +325,9 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_dispatch(%State{} = state) do
+    if state.shutdown_in_progress? do
+      state
+    else
     state = reconcile_running_issues(state)
     state = expire_circuit_breakers(state)
     state = refresh_checkpoint_waiting_counts(state)
@@ -358,6 +373,7 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, reason} ->
         Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
         state
+      end
     end
   end
 
@@ -1981,6 +1997,16 @@ defmodule SymphonyElixir.Orchestrator do
      }, state}
   end
 
+  def handle_call(:request_refresh, _from, %State{shutdown_in_progress?: true} = state) do
+    {:reply,
+     %{
+       queued: false,
+       coalesced: true,
+       requested_at: DateTime.utc_now(),
+       operations: []
+     }, state}
+  end
+
   def handle_call(:request_refresh, _from, state) do
     now_ms = System.monotonic_time(:millisecond)
     already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
@@ -1994,6 +2020,28 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  def handle_call({:initiate_shutdown, timeout_ms}, _from, state) do
+    state = begin_shutdown(state)
+
+    running_pids =
+      state.running
+      |> Map.values()
+      |> Enum.map(fn entry -> Map.get(entry, :pid) end)
+      |> Enum.reject(&is_nil/1)
+
+    wait_ms = min(timeout_ms, 60_000)
+    deadline_ms = System.monotonic_time(:millisecond) + wait_ms
+
+    if running_pids == [] do
+      Logger.info("Graceful shutdown: no running agents, stopping immediately")
+    else
+      Logger.info("Graceful shutdown: waiting up to #{wait_ms}ms for #{length(running_pids)} agent(s) to finish")
+      wait_for_running_pids(running_pids, deadline_ms)
+    end
+
+    {:reply, :ok, state}
   end
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
@@ -2114,19 +2162,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do
-    if is_reference(state.tick_timer_ref) do
-      Process.cancel_timer(state.tick_timer_ref)
+    if state.shutdown_in_progress? do
+      begin_shutdown(state)
+    else
+      if is_reference(state.tick_timer_ref) do
+        Process.cancel_timer(state.tick_timer_ref)
+      end
+
+      tick_token = make_ref()
+      timer_ref = Process.send_after(self(), {:tick, tick_token}, delay_ms)
+
+      %{
+        state
+        | tick_timer_ref: timer_ref,
+          tick_token: tick_token,
+          next_poll_due_at_ms: System.monotonic_time(:millisecond) + delay_ms
+      }
     end
-
-    tick_token = make_ref()
-    timer_ref = Process.send_after(self(), {:tick, tick_token}, delay_ms)
-
-    %{
-      state
-      | tick_timer_ref: timer_ref,
-        tick_token: tick_token,
-        next_poll_due_at_ms: System.monotonic_time(:millisecond) + delay_ms
-    }
   end
 
   defp schedule_poll_cycle_start do
@@ -2142,6 +2194,21 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp pop_running_entry(state, issue_id) do
     {Map.get(state.running, issue_id), %{state | running: Map.delete(state.running, issue_id)}}
+  end
+
+  defp begin_shutdown(%State{} = state) do
+    if is_reference(state.tick_timer_ref) do
+      Process.cancel_timer(state.tick_timer_ref)
+    end
+
+    %{
+      state
+      | shutdown_in_progress?: true,
+        tick_timer_ref: nil,
+        tick_token: nil,
+        next_poll_due_at_ms: nil,
+        poll_check_in_progress: false
+    }
   end
 
   defp record_session_completion_totals(state, running_entry) when is_map(running_entry) do
@@ -2817,4 +2884,46 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp integer_like(_value), do: nil
+
+  # ── Public API ─────────────────────────────────────────────────────────────
+
+  @doc """
+  Initiates a graceful shutdown sequence: waits up to `timeout_ms` (capped at 60s)
+  for running agents to finish their current turn, then returns :ok.
+  The caller is responsible for invoking `:init.stop/0` afterwards.
+  """
+  @spec initiate_shutdown(GenServer.server(), non_neg_integer()) :: :ok
+  def initiate_shutdown(server \\ __MODULE__, timeout_ms \\ 30_000) do
+    if Process.whereis(server) do
+      try do
+        GenServer.call(server, {:initiate_shutdown, timeout_ms}, min(timeout_ms, 60_000) + 5_000)
+      catch
+        :exit, _ -> :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  # ── Private helpers ─────────────────────────────────────────────────────────
+
+  defp wait_for_running_pids([], _deadline_ms), do: :ok
+
+  defp wait_for_running_pids(pids, deadline_ms) do
+    remaining_ms = deadline_ms - System.monotonic_time(:millisecond)
+
+    if remaining_ms <= 0 do
+      Logger.warning("Graceful shutdown: timeout reached, #{length(pids)} agent(s) still running")
+      :ok
+    else
+      still_alive = Enum.filter(pids, &Process.alive?/1)
+
+      if still_alive == [] do
+        :ok
+      else
+        Process.sleep(min(500, remaining_ms))
+        wait_for_running_pids(still_alive, deadline_ms)
+      end
+    end
+  end
 end
