@@ -75,6 +75,43 @@ defmodule SymphonyElixir.ExtensionsTest do
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
     end
+
+    def handle_call({:queue_intervention, issue_identifier, directive}, _from, state) do
+      item = %{
+        at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+        event: "intervention_queued",
+        message: "Directive queued for next turn",
+        directive: directive,
+        queued_count: 1
+      }
+
+      activity =
+        state
+        |> Keyword.get(:activity, %{})
+        |> Map.update(issue_identifier, [item], &(&1 ++ [item]))
+
+      payload = %{
+        issue_identifier: issue_identifier,
+        status: "queued",
+        directive: directive,
+        queued_count: 1
+      }
+
+      {:reply, {:ok, payload}, Keyword.put(state, :activity, activity)}
+    end
+
+    def handle_call({:issue_activity, issue_identifier, since}, _from, state) do
+      items = state |> Keyword.get(:activity, %{}) |> Map.get(issue_identifier, [])
+
+      items =
+        if is_binary(since) do
+          Enum.filter(items, fn item -> String.compare(Map.get(item, :at, ""), since) == :gt end)
+        else
+          items
+        end
+
+      {:reply, {:ok, items}, state}
+    end
   end
 
   setup do
@@ -810,6 +847,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     |> render_submit(%{directive: "stop and use middleware"})
 
     assert render(view) =~ "Directive queued"
+    assert render(view) =~ "intervention_queued"
+    assert render(view) =~ "stop and use middleware"
   end
 
   test "issue detail liveview renders not-found state for inactive issue" do

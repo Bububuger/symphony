@@ -8,6 +8,7 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.Orchestrator
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
 
   @impl true
@@ -17,6 +18,7 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
       |> assign(:identifier, identifier)
       |> assign(:issue, load_issue(identifier))
       |> assign(:tokens, load_tokens(identifier))
+      |> assign(:activity, load_activity(identifier))
       |> assign(:now, DateTime.utc_now())
 
     if connected?(socket) do
@@ -34,6 +36,7 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
      socket
      |> assign(:issue, load_issue(identifier))
      |> assign(:tokens, load_tokens(identifier))
+     |> assign(:activity, load_activity(identifier))
      |> assign(:now, DateTime.utc_now())}
   end
 
@@ -44,8 +47,16 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
     if trimmed == "" do
       {:noreply, put_flash(socket, :error, "Directive cannot be empty")}
     else
-      # Stub: BUB-189 will wire this to the Intervention module
-      {:noreply, put_flash(socket, :info, "Directive queued — takes effect after current turn completes")}
+      case Orchestrator.queue_intervention(orchestrator(), socket.assigns.identifier, trimmed) do
+        {:ok, _payload} ->
+          {:noreply,
+           socket
+           |> assign(:activity, load_activity(socket.assigns.identifier))
+           |> put_flash(:info, "Directive queued — takes effect after current turn completes")}
+
+        {:error, :issue_not_found} ->
+          {:noreply, put_flash(socket, :error, "Issue is no longer active")}
+      end
     end
   end
 
@@ -188,10 +199,31 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
           <div class="section-header">
             <div>
               <h2 class="section-title">Activity timeline</h2>
-              <p class="section-copy">Full event log for this issue (BUB-188 pending).</p>
+              <p class="section-copy">Recent operator-visible events for this issue.</p>
             </div>
           </div>
-          <p class="empty-state">Activity log not yet available.</p>
+          <%= if @activity == [] do %>
+            <p class="empty-state">No activity recorded yet.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 480px;">
+                <thead>
+                  <tr>
+                    <th>At</th>
+                    <th>Event</th>
+                    <th>Message</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={item <- @activity}>
+                    <td class="mono"><%= item[:at] || "n/a" %></td>
+                    <td class="mono"><%= item[:event] || "n/a" %></td>
+                    <td><%= item[:directive] || item[:message] || "n/a" %></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
         </section>
       <% end %>
     </section>
@@ -209,6 +241,13 @@ defmodule SymphonyElixirWeb.IssueDetailLive do
     case Presenter.issue_tokens_payload(identifier, orchestrator(), snapshot_timeout_ms()) do
       {:ok, payload} -> payload
       {:error, :issue_not_found} -> nil
+    end
+  end
+
+  defp load_activity(identifier) do
+    case Orchestrator.issue_activity(orchestrator(), identifier) do
+      {:ok, items} -> items
+      {:error, :issue_not_found} -> []
     end
   end
 
