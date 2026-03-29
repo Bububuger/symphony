@@ -47,6 +47,7 @@ defmodule SymphonyElixir.MixProject do
         plt_add_apps: [:mix]
       ],
       escript: escript(),
+      releases: releases(),
       aliases: aliases(),
       deps: deps()
     ]
@@ -93,6 +94,18 @@ defmodule SymphonyElixir.MixProject do
       main_module: SymphonyElixir.CLI,
       name: "symphony",
       path: "bin/symphony"
+    ]
+  end
+
+  defp releases do
+    [
+      symphony: [
+        include_executables_for: [:unix],
+        include_erts: true,
+        steps: [:assemble, :tar],
+        applications: [runtime_tools: :permanent],
+        rel_templates_path: "rel"
+      ]
     ]
   end
 end
