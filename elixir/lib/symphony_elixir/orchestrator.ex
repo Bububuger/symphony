@@ -345,6 +345,11 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
+  # Works for both atoms (registered names) and pids (e.g. from :global lookup).
+  defp server_alive?(pid) when is_pid(pid), do: Process.alive?(pid)
+  defp server_alive?(name) when is_atom(name), do: Process.whereis(name) != nil
+  defp server_alive?(_), do: false
+
   defp maybe_dispatch(%State{} = state) do
     if state.shutdown_in_progress? do
       state
@@ -1952,7 +1957,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec request_refresh(GenServer.server()) :: map() | :unavailable
   def request_refresh(server) do
-    if Process.whereis(server) do
+    if server_alive?(server) do
       GenServer.call(server, :request_refresh)
     else
       :unavailable
@@ -1964,7 +1969,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec snapshot(GenServer.server(), timeout()) :: map() | :timeout | :unavailable
   def snapshot(server, timeout) do
-    if Process.whereis(server) do
+    if server_alive?(server) do
       try do
         GenServer.call(server, :snapshot, timeout)
       catch
@@ -2934,7 +2939,7 @@ defmodule SymphonyElixir.Orchestrator do
   """
   @spec initiate_shutdown(GenServer.server(), non_neg_integer()) :: :ok
   def initiate_shutdown(server \\ __MODULE__, timeout_ms \\ 30_000) do
-    if Process.whereis(server) do
+    if server_alive?(server) do
       try do
         GenServer.call(server, {:initiate_shutdown, timeout_ms}, min(timeout_ms, 60_000) + 5_000)
       catch
